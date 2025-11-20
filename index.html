@@ -1,822 +1,531 @@
 <!DOCTYPE html>
 <html lang="ro">
 <head>
-  <!-- Google AdSense (ID-ul tău actual) -->
-  <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9902358545401183"
-          crossorigin="anonymous"></script>
+    <!-- Google AdSense (ID-ul tău actual) -->
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-9902358545401183"
+            crossorigin="anonymous"></script>
 
-  <meta charset="UTF-8" />
-  <title>CryptoVision - AI Crypto Insights</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta
-    name="description"
-    content="CryptoVision - preturi crypto live, analiza pseudo-AI zilnică și insight-uri automate pentru începători și traderi."
-  />
-  <style>
-    :root {
-      --bg: #050816;
-      --bg2: #0b1020;
-      --accent: #22c55e;
-      --accent-soft: rgba(34, 197, 94, 0.15);
-      --danger: #ef4444;
-      --text: #e5e7eb;
-      --text-soft: #9ca3af;
-      --card: #0f172a;
-      --border: #1f2937;
-      --font-main: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
+    <meta charset="UTF-8" />
+    <title>CryptoVision – AI Crypto Insights</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+        name="description"
+        content="CryptoVision – prețuri crypto live, analiză pseudo-AI zilnică și insight-uri automate pentru începători și traderi."
+    />
 
-    * {
-      box-sizing: border-box;
-    }
+    <style>
+        :root {
+            --bg: #050816;
+            --bg2: #081026;
+            --accent: #1e90ff;
+            --accent-soft: rgba(30, 144, 255, 0.2);
+            --danger: #ff4444;
+            --text: #e5f0ff;
+            --text-soft: #a9b8e0;
+            --card: #07172a;
+            --border: #123456;
+            --font-main: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
 
-    body {
-      margin: 0;
-      font-family: var(--font-main);
-      background: radial-gradient(circle at top, #111827, #020617);
-      color: var(--text);
-      min-height: 100vh;
-    }
+        * {
+            box-sizing: border-box;
+        }
 
-    .app {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 1.5rem 1rem 2rem;
-    }
+        body {
+            margin: 0;
+            font-family: var(--font-main);
+            background: radial-gradient(circle at top, #172b4d, #050816);
+            color: var(--text);
+            min-height: 100vh;
+        }
 
-    header {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 1.5rem;
-    }
+        .shell {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 24px 16px 40px;
+        }
 
-    .logo-title {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
+        .top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
 
-    .logo-circle {
-      width: 40px;
-      height: 40px;
-      border-radius: 999px;
-      background: radial-gradient(circle at 30% 30%, #22c55e, #0ea5e9);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 800;
-      font-size: 1rem;
-      color: #020617;
-      box-shadow: 0 0 20px rgba(34, 197, 94, 0.6);
-    }
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
 
-    h1 {
-      font-size: 1.6rem;
-      margin: 0;
-    }
+        .logo-badge {
+            width: 38px;
+            height: 38px;
+            border-radius: 999px;
+            background: radial-gradient(circle at 30% 30%, #ffffff, var(--accent));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 800;
+            font-size: 18px;
+            color: #02101f;
+            box-shadow: 0 0 18px rgba(30, 144, 255, 0.7);
+        }
 
-    .subtitle {
-      font-size: 0.9rem;
-      color: var(--text-soft);
-    }
+        .logo-title {
+            font-size: 20px;
+            font-weight: 700;
+        }
 
-    .header-right {
-      text-align: right;
-      font-size: 0.9rem;
-      color: var(--text-soft);
-    }
+        .logo-sub {
+            font-size: 12px;
+            color: var(--text-soft);
+        }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.15rem 0.6rem;
-      border-radius: 999px;
-      background: rgba(34, 197, 94, 0.14);
-      color: var(--accent);
-      font-size: 0.75rem;
-      margin-bottom: 0.25rem;
-    }
+        .badge-live {
+            padding: 6px 12px;
+            border-radius: 999px;
+            font-size: 11px;
+            border: 1px solid rgba(144, 238, 144, 0.4);
+            color: #9affc0;
+            background: rgba(0, 128, 0, 0.09);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
 
-    .layout {
-      display: grid;
-      grid-template-columns: minmax(0, 2fr) minmax(0, 1.5fr);
-      gap: 1.25rem;
-    }
+        .badge-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #2bff7c;
+            box-shadow: 0 0 10px #2bff7c;
+        }
 
-    @media (max-width: 900px) {
-      .layout {
-        grid-template-columns: 1fr;
-      }
-      .header-right {
-        text-align: left;
-      }
-    }
+        .updated {
+            font-size: 11px;
+            color: var(--text-soft);
+            text-align: right;
+        }
 
-    .card {
-      background: radial-gradient(circle at top left, #111827, #020617);
-      border-radius: 1rem;
-      border: 1px solid rgba(148, 163, 184, 0.2);
-      padding: 1rem;
-      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.85);
-      backdrop-filter: blur(14px);
-    }
+        .grid {
+            display: grid;
+            grid-template-columns: minmax(0, 2.1fr) minmax(0, 1.4fr);
+            gap: 18px;
+        }
 
-    .card h2 {
-      margin-top: 0;
-      font-size: 1.1rem;
-    }
+        @media (max-width: 900px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
 
-    .top-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 0.75rem;
-      margin-bottom: 0.75rem;
-    }
+            .top-bar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
 
-    .search-input {
-      width: 100%;
-      padding: 0.45rem 0.7rem;
-      border-radius: 999px;
-      border: 1px solid var(--border);
-      background: rgba(15, 23, 42, 0.8);
-      color: var(--text);
-      font-size: 0.85rem;
-      outline: none;
-    }
+            .updated {
+                text-align: left;
+            }
+        }
 
-    .search-input::placeholder {
-      color: #6b7280;
-    }
+        .card {
+            background: linear-gradient(145deg, rgba(7, 23, 42, 0.96), rgba(5, 8, 22, 0.98));
+            border-radius: 16px;
+            border: 1px solid rgba(18, 52, 86, 0.8);
+            padding: 14px 16px 12px;
+            box-shadow: 0 10px 35px rgba(0, 0, 0, 0.65);
+        }
 
-    .filter-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.25rem;
-      padding: 0.25rem 0.7rem;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.4);
-      font-size: 0.75rem;
-      cursor: pointer;
-      user-select: none;
-      background: rgba(15, 23, 42, 0.8);
-    }
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
 
-    .filter-pill span {
-      font-size: 0.8rem;
-    }
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+        }
 
-    .table-wrapper {
-      margin-top: 0.5rem;
-      border-radius: 0.75rem;
-      border: 1px solid rgba(31, 41, 55, 0.9);
-      overflow: hidden;
-      background: rgba(15, 23, 42, 0.8);
-    }
+        .pill {
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            color: var(--text-soft);
+        }
 
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.82rem;
-    }
+        .search-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
 
-    thead {
-      background: rgba(15, 23, 42, 0.9);
-    }
+        .search-input {
+            flex: 1;
+            border-radius: 999px;
+            border: 1px solid rgba(27, 64, 112, 0.9);
+            padding: 8px 13px;
+            font-size: 13px;
+            background: rgba(5, 8, 22, 0.92);
+            color: var(--text);
+            outline: none;
+        }
 
-    th, td {
-      padding: 0.5rem 0.65rem;
-      text-align: left;
-      white-space: nowrap;
-    }
+        .search-input::placeholder {
+            color: #566a8e;
+        }
 
-    th {
-      font-weight: 500;
-      color: #9ca3af;
-      border-bottom: 1px solid rgba(31, 41, 55, 0.9);
-      font-size: 0.75rem;
-    }
+        .btn-chip {
+            border-radius: 999px;
+            font-size: 12px;
+            padding: 7px 11px;
+            border: 1px solid rgba(30, 144, 255, 0.7);
+            background: rgba(30, 144, 255, 0.1);
+            color: #d1e6ff;
+            cursor: pointer;
+            white-space: nowrap;
+        }
 
-    tbody tr {
-      cursor: pointer;
-      transition: background 0.15s, transform 0.1s;
-    }
+        .btn-chip:hover {
+            background: rgba(30, 144, 255, 0.26);
+        }
 
-    tbody tr:nth-child(odd) {
-      background: rgba(15, 23, 42, 0.7);
-    }
+        .table-wrap {
+            border-radius: 12px;
+            border: 1px solid rgba(25, 67, 112, 0.8);
+            overflow: hidden;
+            background: radial-gradient(circle at top left, rgba(13, 34, 68, 0.9), rgba(5, 8, 22, 0.98));
+        }
 
-    tbody tr:nth-child(even) {
-      background: rgba(17, 24, 39, 0.7);
-    }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
 
-    tbody tr:hover {
-      background: rgba(30, 64, 175, 0.55);
-      transform: translateY(-1px);
-    }
+        thead {
+            background: rgba(10, 28, 62, 0.95);
+        }
 
-    .coin-main {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
+        th,
+        td {
+            padding: 7px 9px;
+            text-align: left;
+        }
 
-    .coin-logo {
-      width: 20px;
-      height: 20px;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.5);
-    }
+        th {
+            font-weight: 600;
+            color: #9db6ff;
+            border-bottom: 1px solid rgba(26, 67, 117, 0.9);
+        }
 
-    .coin-symbol {
-      text-transform: uppercase;
-      font-size: 0.7rem;
-      color: #9ca3af;
-    }
+        tbody tr:nth-child(even) {
+            background: rgba(7, 18, 40, 0.85);
+        }
 
-    .price {
-      font-variant-numeric: tabular-nums;
-    }
+        tbody tr:hover {
+            background: rgba(23, 52, 96, 0.95);
+            cursor: pointer;
+        }
 
-    .chip {
-      padding: 0.15rem 0.55rem;
-      border-radius: 999px;
-      font-size: 0.7rem;
-      font-variant-numeric: tabular-nums;
-    }
+        .col-r {
+            text-align: right;
+        }
 
-    .chip.green {
-      background: rgba(22, 163, 74, 0.18);
-      color: #4ade80;
-    }
+        .chip-pos {
+            color: #39ff9f;
+        }
 
-    .chip.red {
-      background: rgba(220, 38, 38, 0.18);
-      color: #fca5a5;
-    }
+        .chip-neg {
+            color: #ff7575;
+        }
 
-    .small-label {
-      font-size: 0.7rem;
-      color: #9ca3af;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
+        .ai-badge {
+            font-size: 11px;
+            padding: 3px 9px;
+            border-radius: 999px;
+            background: rgba(34, 197, 94, 0.08);
+            border: 1px solid rgba(34, 197, 94, 0.5);
+            color: #a7ffce;
+        }
 
-    .ai-box {
-      border-radius: 0.9rem;
-      padding: 0.75rem 0.8rem;
-      background: radial-gradient(circle at left, rgba(34, 197, 94, 0.15), rgba(15, 23, 42, 0.9));
-      border: 1px solid rgba(34, 197, 94, 0.35);
-      font-size: 0.85rem;
-      line-height: 1.35rem;
-    }
+        .ai-body {
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-soft);
+            margin-bottom: 8px;
+        }
 
-    .ai-title {
-      font-size: 0.8rem;
-      font-weight: 600;
-      color: #bbf7d0;
-      display: flex;
-      align-items: center;
-      gap: 0.35rem;
-      margin-bottom: 0.35rem;
-    }
+        .ai-highlight {
+            color: #e6f3ff;
+            font-weight: 500;
+        }
 
-    .ai-dot {
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: #22c55e;
-      box-shadow: 0 0 10px rgba(34, 197, 94, 0.8);
-    }
+        .ai-list {
+            margin: 0;
+            padding-left: 18px;
+            font-size: 12px;
+            color: var(--text-soft);
+        }
 
-    .side-card-section {
-      display: flex;
-      flex-direction: column;
-      gap: 0.8rem;
-    }
+        .ai-list li {
+            margin-bottom: 3px;
+        }
 
-    .ad-slot {
-      border-radius: 0.75rem;
-      border: 1px dashed rgba(148, 163, 184, 0.5);
-      padding: 0.6rem 0.75rem;
-      font-size: 0.8rem;
-      color: #9ca3af;
-      text-align: center;
-      background: rgba(15, 23, 42, 0.7);
-    }
+        .ad-zone {
+            margin-top: 10px;
+            border-radius: 10px;
+            border: 1px dashed rgba(148, 163, 184, 0.7);
+            padding: 8px 10px;
+            font-size: 11px;
+            color: #9ca3af;
+            background: radial-gradient(circle at top left, rgba(15, 23, 42, 0.85), rgba(15, 23, 42, 0.95));
+        }
 
-    .ad-tag {
-      display: inline-block;
-      font-size: 0.7rem;
-      margin-bottom: 0.15rem;
-      color: #6b7280;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-    }
+        .ad-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #64748b;
+            margin-bottom: 3px;
+        }
 
-    .detail-header {
-      display: flex;
-      align-items: center;
-      gap: 0.6rem;
-      margin-bottom: 0.4rem;
-    }
+        .meta {
+            margin-top: 18px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-soft);
+        }
 
-    .detail-logo {
-      width: 32px;
-      height: 32px;
-      border-radius: 999px;
-      border: 1px solid rgba(148, 163, 184, 0.6);
-    }
+        .meta-item {
+            padding: 7px 9px;
+            border-radius: 10px;
+            background: rgba(6, 15, 35, 0.9);
+            border: 1px solid rgba(21, 40, 80, 0.9);
+        }
 
-    .detail-title {
-      font-size: 1rem;
-      margin: 0;
-    }
-
-    .detail-symbol {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      color: #9ca3af;
-    }
-
-    .detail-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.5rem;
-      margin-bottom: 0.5rem;
-      font-size: 0.8rem;
-    }
-
-    .detail-item {
-      padding: 0.45rem 0.6rem;
-      border-radius: 0.6rem;
-      background: rgba(15, 23, 42, 0.9);
-      border: 1px solid rgba(31, 41, 55, 0.9);
-    }
-
-    .detail-label {
-      font-size: 0.7rem;
-      color: #9ca3af;
-      margin-bottom: 0.15rem;
-    }
-
-    .detail-value {
-      font-variant-numeric: tabular-nums;
-    }
-
-    .footer {
-      margin-top: 1.5rem;
-      font-size: 0.75rem;
-      color: #6b7280;
-      text-align: center;
-    }
-
-    .footer a {
-      color: #9ca3af;
-      text-decoration: none;
-    }
-
-    .footer a:hover {
-      text-decoration: underline;
-    }
-
-    .loading {
-      font-size: 0.8rem;
-      color: #9ca3af;
-      padding: 0.4rem 0.1rem;
-    }
-
-    .error {
-      font-size: 0.8rem;
-      color: #fca5a5;
-      padding: 0.4rem 0.1rem;
-    }
-
-    .pill-sentiment {
-      padding: 0.2rem 0.6rem;
-      border-radius: 999px;
-      font-size: 0.75rem;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.3rem;
-    }
-
-    .pill-bull {
-      background: rgba(34, 197, 94, 0.2);
-      color: #4ade80;
-    }
-
-    .pill-bear {
-      background: rgba(239, 68, 68, 0.2);
-      color: #fecaca;
-    }
-
-    .pill-neutral {
-      background: rgba(148, 163, 184, 0.25);
-      color: #e5e7eb;
-    }
-  </style>
+        .meta-item strong {
+            color: #e0edff;
+        }
+    </style>
 </head>
 <body>
-<div class="app">
-  <header>
-    <div class="logo-title">
-      <div class="logo-circle">CV</div>
-      <div>
-        <h1>CryptoVision</h1>
-        <div class="subtitle">
-          Preturi crypto live + insight-uri pseudo-AI pentru incepatori si traderi.
+<div class="shell">
+    <header class="top-bar">
+        <div>
+            <div class="logo">
+                <div class="logo-badge">CV</div>
+                <div>
+                    <div class="logo-title">CryptoVision</div>
+                    <div class="logo-sub">
+                        Prețuri crypto live + insight-uri pseudo-AI pentru începători și traderi.
+                    </div>
+                </div>
+            </div>
+            <div class="meta" style="max-width: 520px; margin-top: 10px;">
+                <div class="meta-item"><strong>✔ Prețuri crypto live</strong> (feed pregătit pentru API).</div>
+                <div class="meta-item"><strong>✔ Analiză pseudo-AI zilnică</strong> pentru top monede.</div>
+                <div class="meta-item"><strong>✔ Analiză individuală</strong> pentru fiecare monedă selectată.</div>
+                <div class="meta-item"><strong>✔ Design modern</strong>, responsive, optimizat pentru reclame.</div>
+                <div class="meta-item"><strong>✔ Zonă dedicată AdSense / afiliere</strong>.</div>
+                <div class="meta-item"><strong>✔ Structură pregătită</strong> pentru upgrade-uri viitoare (API, AI real).</div>
+            </div>
         </div>
-      </div>
-    </div>
-    <div class="header-right">
-      <div class="badge">
-        <span>⚡</span>
-        <span>Live Market Feed</span>
-      </div>
-      <div>Actualizat: <span id="date-span"></span></div>
-    </div>
-  </header>
 
-  <div class="layout">
-    <!-- COL STÂNGA: LISTĂ COINS -->
-    <section class="card">
-      <div class="top-row">
-        <div style="flex: 1;">
-          <input
-            id="search-input"
-            class="search-input"
-            type="text"
-            placeholder="Cauta o moneda (ex: bitcoin, eth, bnb)..."
-          />
+        <div>
+            <div class="badge-live">
+                <span class="badge-dot"></span>
+                Live market feed (simulat)
+            </div>
+            <div class="updated" id="updatedAt">Actualizat: se încarcă...</div>
         </div>
-        <button id="filter-movers" class="filter-pill">
-          🔍 <span>Top miscari 24h</span>
-        </button>
-      </div>
+    </header>
 
-      <div class="table-wrapper">
-        <div id="status" class="loading">Se incarca datele de pe CoinGecko...</div>
-        <table id="coins-table" style="display: none;">
-          <thead>
-          <tr>
-            <th>#</th>
-            <th>Moneda</th>
-            <th>Pret</th>
-            <th>24h</th>
-            <th>Market Cap</th>
-          </tr>
-          </thead>
-          <tbody id="coins-tbody"></tbody>
-        </table>
-      </div>
+    <main class="grid">
+        <!-- Tabel monede -->
+        <section class="card">
+            <div class="card-header">
+                <div class="card-title">Monede urmărite</div>
+                <div class="pill">Top mișcări 24h</div>
+            </div>
 
-      <div style="margin-top: 0.6rem; font-size: 0.7rem; color: #6b7280;">
-        Date furnizate de <a href="https://www.coingecko.com" target="_blank" style="color:#9ca3af;">CoinGecko API</a>.  
-        Insight-urile „AI” sunt generate local, in browser, pe baza miscarilor de pret.
-      </div>
-    </section>
+            <div class="search-row">
+                <input
+                    id="search"
+                    class="search-input"
+                    type="text"
+                    placeholder="Caută o monedă (ex: bitcoin, eth, bnb)..."
+                />
+                <button class="btn-chip" id="btnTop">Top + / - 24h</button>
+            </div>
 
-    <!-- COL DREAPTA: ANALIZĂ AI + AD -->
-    <section class="side-card-section">
-      <div class="card">
-        <h2>CryptoVision AI – Insight-ul zilei</h2>
-        <div class="ai-box" id="daily-ai-box">
-          <div class="ai-title">
-            <span class="ai-dot"></span>
-            <span>Motor pseudo-AI activ</span>
-          </div>
-          <div id="daily-ai-text">
-            Se genereaza insight-ul pe baza sentimentului pietei...
-          </div>
-        </div>
-      </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Monedă</th>
+                        <th>Preț</th>
+                        <th class="col-r">24h</th>
+                        <th class="col-r">Market Cap</th>
+                    </tr>
+                    </thead>
+                    <tbody id="coinBody">
+                    <!-- rândurile sunt generate din JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
 
-      <div class="card">
-        <div class="top-row" style="margin-bottom: 0.5rem;">
-          <h2 style="margin: 0;">Analiza monedei selectate</h2>
-          <span class="small-label">Click pe o moneda in lista</span>
-        </div>
-        <div id="coin-detail-empty" style="font-size: 0.8rem; color: #9ca3af;">
-          Nu ai selectat inca nicio moneda. Alege una din lista pentru a vedea:
-          <ul style="margin-top: 0.3rem; padding-left: 1.1rem;">
-            <li>Structura miscarii din ultimele 24h</li>
-            <li>Sentiment estimat (bullish / bearish / neutru)</li>
-            <li>Un mic comentariu generat pseudo-AI</li>
-          </ul>
-        </div>
-        <div id="coin-detail" style="display: none;">
-          <div class="detail-header">
-            <img id="detail-logo" class="detail-logo" src="" alt="logo" />
-            <div>
-              <div class="detail-title" id="detail-name"></div>
-              <div class="detail-symbol" id="detail-symbol"></div>
+        <!-- Panou AI + Zonă reclamă -->
+        <section class="card">
+            <div class="card-header">
+                <div class="card-title">CryptoVision AI – Insight-ul zilei</div>
+                <span class="ai-badge">Motor pseudo-AI activ</span>
             </div>
-          </div>
-          <div style="margin-bottom:0.4rem;">
-            <span id="detail-sentiment-pill" class="pill-sentiment pill-neutral">
-              🔎 Neutru
-            </span>
-          </div>
-          <div class="detail-grid">
-            <div class="detail-item">
-              <div class="detail-label">Pret curent</div>
-              <div class="detail-value" id="detail-price"></div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Variație 24h</div>
-              <div class="detail-value" id="detail-change"></div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Max 24h</div>
-              <div class="detail-value" id="detail-high24h"></div>
-            </div>
-            <div class="detail-item">
-              <div class="detail-label">Min 24h</div>
-              <div class="detail-value" id="detail-low24h"></div>
-            </div>
-          </div>
-          <div class="ai-box" id="coin-ai-box">
-            <div class="ai-title">
-              <span class="ai-dot"></span>
-              <span>Comentariu pseudo-AI</span>
-            </div>
-            <div id="coin-ai-text">
-              Se genereaza comentariul in functie de miscarea monedei...
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div class="ad-slot">
-        <div class="ad-tag">Zona reclama</div>
-        <div>Loc pentru banner Google AdSense / afiliere crypto / link catre canalul tau.</div>
-      </div>
-    </section>
-  </div>
+            <div class="ai-body" id="aiDaily">
+                Pe baza primelor 50 monede după capitalizare, sentimentul general al pieței astăzi pare
+                <span class="ai-highlight">ușor echilibrat</span>, cu rotații între Bitcoin, Ethereum și altcoin-urile
+                majore. Volatilitatea rămâne prezentă, dar fără panică extremă.
+            </div>
 
-  <div class="footer">
-    © <span id="year-span"></span> CryptoVision · Creat pentru monitorizare & educatie financiara.  
-    Nu este sfat financiar.  
-    Date crypto de la <a href="https://www.coingecko.com" target="_blank">CoinGecko</a>.
-  </div>
+            <ul class="ai-list">
+                <li>👉 Zona de interes: monede cu corecții între <span class="ai-highlight">-3% și -7%</span>.</li>
+                <li>👉 Evită monedele cu pump agresiv peste <span class="ai-highlight">+20% în 24h</span> fără știri clare.</li>
+                <li>👉 Nu este un sfat financiar – doar un rezumat pseudo-AI bazat pe mișcări de preț.</li>
+            </ul>
+
+            <hr style="border-color: rgba(30, 64, 118, 0.8); margin: 10px 0;" />
+
+            <div class="card-header" style="margin-bottom: 6px;">
+                <div class="card-title">Analiza monedei selectate</div>
+                <span class="pill" id="selectedSymbol">Nicio monedă selectată</span>
+            </div>
+
+            <div class="ai-body" id="selectedInfo">
+                Alege o monedă din tabel pentru a vedea:
+                • structura mișcării din ultimele 24h • sentiment estimat (bullish / bearish / neutru) • un mic comentariu
+                generat pseudo-AI.
+            </div>
+
+            <div class="ad-zone">
+                <div class="ad-label">Zonă reclamă</div>
+                Loc pentru banner Google AdSense / link afiliere crypto / link către canalul tău.
+                <br />
+                Când contul AdSense este aprobat, aici vor apărea automat anunțurile.
+            </div>
+        </section>
+    </main>
 </div>
 
 <script>
-  const dateSpan = document.getElementById("date-span");
-  const yearSpan = document.getElementById("year-span");
-  const statusEl = document.getElementById("status");
-  const tableEl = document.getElementById("coins-table");
-  const tbodyEl = document.getElementById("coins-tbody");
-  const searchInput = document.getElementById("search-input");
-  const filterMoversBtn = document.getElementById("filter-movers");
+    // --- Date demo pentru monede (simulare până conectăm API real) ---
+    const coins = [
+        { rank: 1, name: "Bitcoin",   symbol: "BTC",  price: 68943.5, change24h: -1.49, mcap: 1345678900000 },
+        { rank: 2, name: "Ethereum",  symbol: "ETH",  price: 2888.3,  change24h: -2.36, mcap: 345678900000 },
+        { rank: 3, name: "Tether",    symbol: "USDT", price: 1.00,    change24h:  0.02, mcap: 126000000000 },
+        { rank: 4, name: "BNB",       symbol: "BNB",  price: 578.7,   change24h: -3.12, mcap: 89000000000 },
+        { rank: 5, name: "Solana",    symbol: "SOL",  price: 133.4,   change24h:  4.82, mcap: 78000000000 },
+        { rank: 6, name: "XRP",       symbol: "XRP",  price: 0.62,    change24h: -2.01, mcap: 34000000000 },
+        { rank: 7, name: "Cardano",   symbol: "ADA",  price: 0.44,    change24h: -1.77, mcap: 16000000000 },
+        { rank: 8, name: "Dogecoin",  symbol: "DOGE", price: 0.15,    change24h:  3.95, mcap: 22000000000 },
+        { rank: 9, name: "Avalanche", symbol: "AVAX", price: 38.7,    change24h: -0.84, mcap: 14000000000 },
+        { rank:10, name: "Toncoin",   symbol: "TON",  price: 5.67,    change24h:  6.12, mcap: 19000000000 }
+    ];
 
-  const coinDetailContainer = document.getElementById("coin-detail");
-  const coinDetailEmpty = document.getElementById("coin-detail-empty");
-  const detailLogo = document.getElementById("detail-logo");
-  const detailName = document.getElementById("detail-name");
-  const detailSymbol = document.getElementById("detail-symbol");
-  const detailPrice = document.getElementById("detail-price");
-  const detailChange = document.getElementById("detail-change");
-  const detailHigh24h = document.getElementById("detail-high24h");
-  const detailLow24h = document.getElementById("detail-low24h");
-  const detailSentimentPill = document.getElementById("detail-sentiment-pill");
-  const coinAiText = document.getElementById("coin-ai-text");
+    let filtered = [...coins];
+    let sortByMove = false;
 
-  const dailyAiText = document.getElementById("daily-ai-text");
-
-  let coinsRaw = [];
-  let filterTopMovers = false;
-
-  function formatPrice(num) {
-    if (num === null || num === undefined) return "-";
-    if (num > 1000) {
-      return num.toLocaleString("en-US", { maximumFractionDigits: 0 }) + " $";
-    }
-    if (num > 1) {
-      return num.toLocaleString("en-US", { maximumFractionDigits: 2 }) + " $";
-    }
-    return num.toLocaleString("en-US", { maximumFractionDigits: 6 }) + " $";
-  }
-
-  function formatNumber(num) {
-    if (num === null || num === undefined) return "-";
-    if (num >= 1_000_000_000) {
-      return (num / 1_000_000_000).toFixed(2) + " B";
-    }
-    if (num >= 1_000_000) {
-      return (num / 1_000_000).toFixed(2) + " M";
-    }
-    if (num >= 1_000) {
-      return (num / 1_000).toFixed(2) + " K";
-    }
-    return num.toLocaleString("en-US");
-  }
-
-  function setSentimentPill(pillEl, pct) {
-    pillEl.className = "pill-sentiment";
-    let label = "Neutru";
-    let icon = "🔎";
-    if (pct > 3) {
-      pillEl.classList.add("pill-bull");
-      label = "Bullish";
-      icon = "🐂";
-    } else if (pct < -3) {
-      pillEl.classList.add("pill-bear");
-      label = "Bearish";
-      icon = "🐻";
-    } else {
-      pillEl.classList.add("pill-neutral");
-      label = "Neutru";
-      icon = "⚖️";
-    }
-    pillEl.textContent = icon + " " + label;
-  }
-
-  function makeCoinAiText(coin) {
-    const pct = coin.price_change_percentage_24h ?? 0;
-    const name = coin.name;
-    const price = formatPrice(coin.current_price);
-    const high = formatPrice(coin.high_24h);
-    const low = formatPrice(coin.low_24h);
-
-    if (pct > 8) {
-      return `${name} a avut o zi exploziva, cu o crestere de aproximativ ${pct.toFixed(
-        2
-      )}%. Pretul se tranzactioneaza acum in zona de ${price}, dupa ce a atins un maxim local de ${high}. 
-Pentru traderii agresivi, astfel de miscari pot sugera continuarea trendului, dar si risc de corectie rapida. Gestionarea riscului ramane esentiala.`;
-    } else if (pct > 3) {
-      return `${name} arata un momentum pozitiv, cu o apreciere de circa ${pct.toFixed(
-        2
-      )}% in ultimele 24h. Intervalul de tranzactionare a fost intre ${low} si ${high}. 
-Contextul este usor bullish, insa confirmarea vine doar din timeframe-uri mai mari si volume.`;
-    } else if (pct < -8) {
-      return `${name} a intrat intr-o zona de presiune puternic bearish, corectand aproximativ ${pct.toFixed(
-        2
-      )}% in ultimele 24h. Miscarea de la ${high} spre ${low} poate indica panica sau capitulare locala. 
-Traderii prudenti asteapta, de obicei, semnale clare de stabilizare inainte de a intra.`;
-    } else if (pct < -3) {
-      return `${name} este intr-o faza de corectie moderata, cu o scadere de ${pct.toFixed(
-        2
-      )}%. Pretul actual este ${price}, intre suportul local (~${low}) si rezistenta recenta (~${high}). 
-Aceasta zona este, de obicei, folosita pentru analize mai detaliate (RSI, volum) inainte de decizii.`;
-    } else {
-      return `${name} a avut o sesiune relativ echilibrata, cu o variatie de aproximativ ${pct.toFixed(
-        2
-      )}%. Pretul oscileaza acum in jurul valorii de ${price}, intre minimul ${low} si maximul ${high}. 
-Piata pare indecisa, iar astfel de conditii sunt frecvent asociate cu acumulare sau asteptarea unui catalizator major (stiri, date macro).`;
-    }
-  }
-
-  function makeDailyAiInsight(coins) {
-    if (!coins || coins.length === 0) return "Nu exista suficiente date pentru analiza.";
-
-    const top = [...coins].sort(
-      (a, b) => (b.price_change_percentage_24h ?? 0) - (a.price_change_percentage_24h ?? 0)
-    );
-    const best = top[0];
-    const worst = [...coins].sort(
-      (a, b) => (a.price_change_percentage_24h ?? 0) - (b.price_change_percentage_24h ?? 0)
-    )[0];
-
-    const avgChange =
-      coins.reduce((sum, c) => sum + (c.price_change_percentage_24h ?? 0), 0) / coins.length;
-
-    let mood;
-    if (avgChange > 2) mood = "usor bullish";
-    else if (avgChange < -2) mood = "usor bearish";
-    else mood = "echilibrat / lateral";
-
-    return `Pe baza primelor ${coins.length} monede dupa capitalizare, sentimentul general al pietei astazi pare **${mood}** (variatie medie ~${avgChange.toFixed(
-      2
-    )}%). 
-Cea mai performanta moneda din lista este **${best.name}** (${(best.price_change_percentage_24h ?? 0).toFixed(
-      2
-    )}% in 24h), in timp ce **${worst.name}** a inregistrat cea mai mare presiune negativa (${(
-      worst.price_change_percentage_24h ?? 0
-    ).toFixed(2)}%). 
-Acest tip de distributie sugereaza o piata unde selectia atenta a monedelor conteaza mai mult decat trendul general.`;
-  }
-
-  function renderTable() {
-    const q = searchInput.value.trim().toLowerCase();
-    let list = [...coinsRaw];
-
-    if (filterTopMovers) {
-      list.sort(
-        (a, b) =>
-          Math.abs(b.price_change_percentage_24h ?? 0) -
-          Math.abs(a.price_change_percentage_24h ?? 0)
-      );
-      list = list.slice(0, 15);
+    function formatUSD(v) {
+        if (v > 1_000_000_000) return (v / 1_000_000_000).toFixed(1) + " B $";
+        if (v > 1_000_000) return (v / 1_000_000).toFixed(1) + " M $";
+        return v.toFixed(2) + " $";
     }
 
-    if (q) {
-      list = list.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          (c.symbol && c.symbol.toLowerCase().includes(q))
-      );
+    function renderTable() {
+        const tbody = document.getElementById("coinBody");
+        tbody.innerHTML = "";
+
+        filtered.forEach((c) => {
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+                <td>${c.rank}</td>
+                <td>${c.name} <span style="color:#64748b;font-size:11px;">${c.symbol}</span></td>
+                <td>${c.price.toLocaleString("en-US", { maximumFractionDigits: 2 })} $</td>
+                <td class="col-r ${c.change24h >= 0 ? "chip-pos" : "chip-neg"}">
+                    ${c.change24h >= 0 ? "+" : ""}${c.change24h.toFixed(2)}%
+                </td>
+                <td class="col-r">${formatUSD(c.mcap)}</td>
+            `;
+
+            tr.addEventListener("click", () => selectCoin(c));
+            tbody.appendChild(tr);
+        });
     }
 
-    tbodyEl.innerHTML = "";
+    function selectCoin(c) {
+        document.getElementById("selectedSymbol").textContent = `${c.name} (${c.symbol})`;
 
-    list.forEach((coin, index) => {
-      const tr = document.createElement("tr");
+        let sentiment = "neutru";
+        if (c.change24h > 2) sentiment = "bullish";
+        else if (c.change24h < -2) sentiment = "bearish";
 
-      const pct = coin.price_change_percentage_24h ?? 0;
-      const isUp = pct >= 0;
+        const text = `
+            ${c.name} a avut o variație de aproximativ ${c.change24h.toFixed(2)}% în ultimele 24h,
+            cu un preț curent în jur de ${c.price.toLocaleString("en-US", { maximumFractionDigits: 2 })} $.
+            Sentimentul pseudo-AI pentru această monedă este <span class="ai-highlight">${sentiment}</span>.
+            Mișcări puternice pot semnala atât oportunități, cât și riscuri ridicate – nu reprezintă un sfat financiar.
+        `;
 
-      tr.innerHTML = `
-        <td>${coin.market_cap_rank ?? index + 1}</td>
-        <td>
-          <div class="coin-main">
-            <img class="coin-logo" src="${coin.image}" alt="${coin.name}" />
-            <div>
-              <div>${coin.name}</div>
-              <div class="coin-symbol">${coin.symbol}</div>
-            </div>
-          </div>
-        </td>
-        <td class="price">${formatPrice(coin.current_price)}</td>
-        <td>
-          <span class="chip ${isUp ? "green" : "red"}">
-            ${isUp ? "+" : ""}${pct.toFixed(2)}%
-          </span>
-        </td>
-        <td>${formatNumber(coin.market_cap)} $</td>
-      `;
-
-      tr.addEventListener("click", () => {
-        showCoinDetail(coin);
-      });
-
-      tbodyEl.appendChild(tr);
-    });
-  }
-
-  function showCoinDetail(coin) {
-    coinDetailEmpty.style.display = "none";
-    coinDetailContainer.style.display = "block";
-
-    detailLogo.src = coin.image;
-    detailName.textContent = coin.name;
-    detailSymbol.textContent = coin.symbol.toUpperCase();
-
-    const pct = coin.price_change_percentage_24h ?? 0;
-    detailPrice.textContent = formatPrice(coin.current_price);
-    detailChange.textContent = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
-    detailHigh24h.textContent = formatPrice(coin.high_24h);
-    detailLow24h.textContent = formatPrice(coin.low_24h);
-
-    setSentimentPill(detailSentimentPill, pct);
-    coinAiText.textContent = makeCoinAiText(coin);
-  }
-
-  async function fetchCoins() {
-    statusEl.textContent = "Se incarca datele de pe CoinGecko...";
-    statusEl.className = "loading";
-
-    try {
-      const url =
-        "https://api.coingecko.com/api/v3/coins/markets" +
-        "?vs_currency=usd&order=market_cap_desc&per_page=50&page=1&sparkline=false&price_change_percentage=24h";
-      const res = await fetch(url);
-
-      if (!res.ok) throw new Error("Nu s-au putut prelua datele");
-
-      const data = await res.json();
-      coinsRaw = data;
-      statusEl.textContent = "";
-      tableEl.style.display = "table";
-      renderTable();
-
-      dailyAiText.textContent = makeDailyAiInsight(coinsRaw);
-    } catch (err) {
-      statusEl.textContent = "Eroare la incarcarea datelor";
-      statusEl.className = "error";
+        document.getElementById("selectedInfo").innerHTML = text;
     }
-  }
 
-  function init() {
-    const now = new Date();
-    dateSpan.textContent = now.toLocaleString("ro-RO");
-    yearSpan.textContent = now.getFullYear();
+    function updateTime() {
+        const now = new Date();
+        const formatted = now.toLocaleString("ro-RO", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        });
+        document.getElementById("updatedAt").textContent = "Actualizat: " + formatted;
+    }
 
-    searchInput.addEventListener("input", renderTable);
-    filterMoversBtn.addEventListener("click", () => {
-      filterTopMovers = !filterTopMovers;
-      renderTable();
+    // --- Evenimente ---
+    document.getElementById("search").addEventListener("input", (e) => {
+        const q = e.target.value.toLowerCase().trim();
+        filtered = coins.filter(
+            (c) =>
+                c.name.toLowerCase().includes(q) ||
+                c.symbol.toLowerCase().includes(q)
+        );
+        renderTable();
     });
 
-    fetchCoins();
-  }
+    document.getElementById("btnTop").addEventListener("click", () => {
+        sortByMove = !sortByMove;
+        if (sortByMove) {
+            filtered.sort((a, b) => Math.abs(b.change24h) - Math.abs(a.change24h));
+        } else {
+            filtered.sort((a, b) => a.rank - b.rank);
+        }
+        renderTable();
+    });
 
-  init();
+    // Init
+    renderTable();
+    updateTime();
+    setInterval(updateTime, 1000 * 60); // actualizare la 1 minut
 </script>
 </body>
 </html>
