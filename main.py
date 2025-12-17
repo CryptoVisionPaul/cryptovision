@@ -1,31 +1,29 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 
 app = FastAPI(title="CryptoVision Backend")
 
+# CORS – obligatoriu pentru GitHub Pages
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # poți restrânge mai târziu la GitHub Pages domain
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-COINGECKO_BASE = "https://api.coingecko.com/api/v3"
-
+COINGECKO_API = "https://api.coingecko.com/api/v3"
 
 @app.get("/")
 def root():
     return {"status": "CryptoVision backend is running"}
 
-
 @app.get("/health")
 def health():
     return {"ok": True}
 
-
-# ✅ endpoint folosit de UI ca test simplu
+# 🔹 SIMPLE DEMO (3 coins)
 @app.get("/coins/simple")
 def coins_simple():
     return {
@@ -37,24 +35,23 @@ def coins_simple():
         ],
     }
 
-
-# ✅ IMPORTANT: endpoint pentru tabel (imită CoinGecko /coins/markets)
+# 🔹 REAL MARKET DATA (TOP 50)
 @app.get("/coins/markets")
 def coins_markets(
-    vs_currency: str = Query("usd"),
-    order: str = Query("market_cap_desc"),
-    per_page: int = Query(50, ge=1, le=250),
-    page: int = Query(1, ge=1, le=100),
-    sparkline: bool = Query(False),
-    price_change_percentage: str = Query("1h,24h,7d"),
+    vs_currency: str = "usd",
+    order: str = "market_cap_desc",
+    per_page: int = 50,
+    page: int = 1,
+    sparkline: bool = False,
+    price_change_percentage: str = "1h,24h,7d",
 ):
-    url = f"{COINGECKO_BASE}/coins/markets"
+    url = f"{COINGECKO_API}/coins/markets"
     params = {
         "vs_currency": vs_currency,
         "order": order,
         "per_page": per_page,
         "page": page,
-        "sparkline": str(sparkline).lower(),
+        "sparkline": sparkline,
         "price_change_percentage": price_change_percentage,
     }
 
