@@ -101,44 +101,70 @@ def coins_markets(
 
     cache_key = _make_cache_key("/coins/markets", params)
 
-    # 1) returnăm cache fresh imediat (super rapid)
+    # 0) Cache "last good" global (independent de query)
+    #    Cheie fixă, o folosim ca fallback universal
+    last_good_key = "LAST_GOOD:/coins/markets"
+
+    # 1) Fresh cache pentru query exact
     cached = _cache_get(cache_key)
     if cached:
         response.headers["X-Cache"] = "HIT"
         response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
         return cached["data"]
 
-    # 2) altfel, încercăm upstream
-    try:
-        r = session.get(url, params=params, timeout=20)
+    def try_upstream(p: dict):
+        r = session.get(url, params=p, timeout=20)
+        return r
 
-        # Dacă upstream e ok
+    # 2) Încercăm upstream cu parametrii ceruți
+    try:
+        r = try_upstream(params)
+
         if r.status_code == 200:
             data = r.json()
             _cache_set(cache_key, data, status=200)
+            _cache_set(last_good_key, data, status=200)  # actualizăm și last-good
             response.headers["X-Cache"] = "MISS"
             response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
             return data
 
-        # Dacă upstream e 429 (rate limit) -> servim stale dacă există
+        # 3) Dacă e 429 -> încercăm fallback automat cu per_page mai mic (25, 10)
         if r.status_code == 429:
-            stale = _cache_get_stale(cache_key)
-            if stale and stale.get("data") is not None:
-                response.headers["X-Cache"] = "STALE"
+            for smaller in [25, 10]:
+                if smaller == per_page:
+                    continue
+                p2 = dict(params)
+                p2["per_page"] = smaller
+                r2 = try_upstream(p2)
+                if r2.status_code == 200:
+                    data2 = r2.json()
+                    # salvăm ca last_good (important)
+                    _cache_set(last_good_key, data2, status=200)
+                    # și cache pentru query-ul actual, ca să nu pice UI
+                    _cache_set(cache_key, data2, status=200)
+
+                    response.headers["X-Cache"] = "FALLBACK-SMALLER"
+                    response.headers["X-Upstream-Status"] = "429"
+                    response.headers["X-Fallback-Per-Page"] = str(smaller)
+                    return data2
+
+            # 4) Dacă tot 429, dăm "last good" global dacă există
+            last_good = _cache_get_stale(last_good_key)
+            if last_good and last_good.get("data") is not None:
+                response.headers["X-Cache"] = "STALE-LAST-GOOD"
                 response.headers["X-Upstream-Status"] = "429"
-                # Retry-After dacă există
                 ra = r.headers.get("Retry-After")
                 if ra:
                     response.headers["Retry-After"] = ra
-                return stale["data"]
+                return last_good["data"]
 
-            # dacă nu avem cache, returnăm mesaj clar
+            # 5) Dacă nu există nimic în cache, returnăm 429 explicit
             return JSONResponse(
                 status_code=429,
                 content={
                     "error": "Upstream rate limited (CoinGecko). No cached data yet.",
-                    "detail": r.text[:300]
-                }
+                    "detail": r.text[:400],
+                },
             )
 
         # alte erori upstream
@@ -147,24 +173,24 @@ def coins_markets(
             content={
                 "error": "Upstream request failed (CoinGecko).",
                 "status_code": r.status_code,
-                "detail": r.text[:300],
-            }
+                "detail": r.text[:400],
+            },
         )
 
     except requests.RequestException as e:
-        # dacă upstream e down, servim stale dacă există
-        stale = _cache_get_stale(cache_key)
-        if stale and stale.get("data") is not None:
-            response.headers["X-Cache"] = "STALE"
+        # 6) Dacă upstream e down/timeout, folosim last_good dacă există
+        last_good = _cache_get_stale(last_good_key)
+        if last_good and last_good.get("data") is not None:
+            response.headers["X-Cache"] = "STALE-LAST-GOOD"
             response.headers["X-Upstream-Status"] = "EXCEPTION"
-            return stale["data"]
+            return last_good["data"]
 
         return JSONResponse(
             status_code=503,
             content={
                 "error": "Upstream request exception (CoinGecko).",
                 "detail": str(e),
-            }
+            },
         )
 
 # ------------------------------------------------------------
