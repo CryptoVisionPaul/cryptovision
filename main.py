@@ -1,71 +1,107 @@
 from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import requests
 import time
-import threading
-from typing import Any, Dict, Tuple
+import json
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 app = FastAPI(title="CryptoVision Backend")
 
-# CORS (ok pentru test; mai târziu restrângem la domeniul tău GitHub Pages)
+# CORS (pentru test e OK; ulterior îl restrângem la domeniul tău)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
-# Session HTTP reutilizabil (mai rapid și mai “corect”)
+# -------------------------------------------------------------------
+# HTTP session (mai rapid + mai stabil decât requests.get repetat)
+# -------------------------------------------------------------------
 session = requests.Session()
+retry = Retry(
+    total=2,
+    backoff_factor=0.6,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET"],
+    raise_on_status=False,
+)
+adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
 session.headers.update({
     "Accept": "application/json",
-    "User-Agent": "CryptoVisionBackend/1.0 (+https://cryptovisionpaul.github.io)"
+    "User-Agent": "CryptoVision/1.0 (Render; contact: you)"
 })
 
-# ------------------------------------------------------------
-# CACHE in-memory (TTL + stale fallback)
-# ------------------------------------------------------------
-CACHE_TTL_SECONDS = 45  # 30–60 sec e ideal pentru markets
-_cache_lock = threading.Lock()
-_cache: Dict[str, Dict[str, Any]] = {}
-# struct:
-# _cache[key] = {
-#   "ts": float,
-#   "data": Any,
-#   "status": int
-# }
+# -------------------------------------------------------------------
+# Cache in-memory (Render free: se resetează la redeploy/restart — OK)
+# Strategie:
+# - TTL: cât considerăm “fresh”
+# - STALE: cât acceptăm să servim “ultimul bun” dacă upstream e 429
+# - Throttle: nu lovim CoinGecko mai des decât la X sec pe același endpoint
+# -------------------------------------------------------------------
+CACHE_TTL_SECONDS = 60          # fresh 60s
+CACHE_STALE_SECONDS = 15 * 60   # acceptăm stale 15 min dacă e 429
+THROTTLE_SECONDS = 45           # minim 45s între request-uri upstream
+
+_cache = {}  # key -> {"ts": float, "data": any, "status": int, "last_upstream_ts": float}
+
+def _now() -> float:
+    return time.time()
 
 def _cache_get(key: str):
-    now = time.time()
-    with _cache_lock:
-        entry = _cache.get(key)
-        if not entry:
-            return None
-        age = now - entry["ts"]
-        if age <= CACHE_TTL_SECONDS:
-            return entry  # fresh
+    obj = _cache.get(key)
+    if not obj:
         return None
+    age = _now() - obj["ts"]
+    if age <= CACHE_TTL_SECONDS:
+        return obj
+    return None
 
 def _cache_get_stale(key: str):
-    with _cache_lock:
-        return _cache.get(key)
+    obj = _cache.get(key)
+    if not obj:
+        return None
+    age = _now() - obj["ts"]
+    if age <= CACHE_STALE_SECONDS:
+        return obj
+    return None
 
-def _cache_set(key: str, data: Any, status: int = 200):
-    with _cache_lock:
-        _cache[key] = {"ts": time.time(), "data": data, "status": status}
+def _cache_set(key: str, data, status: int = 200):
+    _cache[key] = {
+        "ts": _now(),
+        "data": data,
+        "status": status,
+        "last_upstream_ts": _cache.get(key, {}).get("last_upstream_ts", 0.0),
+    }
 
-def _make_cache_key(path: str, params: Dict[str, Any]) -> str:
-    # key determinist: path + parametrii sortați
-    items = sorted((str(k), str(v)) for k, v in params.items())
-    return path + "?" + "&".join([f"{k}={v}" for k, v in items])
+def _make_cache_key(path: str, params: dict) -> str:
+    # cheie deterministă
+    return f"{path}:{json.dumps(params, sort_keys=True)}"
 
-# ------------------------------------------------------------
-# Basic endpoints
-# ------------------------------------------------------------
+def _can_hit_upstream(throttle_key: str) -> bool:
+    obj = _cache.get(throttle_key)
+    if not obj:
+        return True
+    last = obj.get("last_upstream_ts", 0.0) or 0.0
+    return (_now() - last) >= THROTTLE_SECONDS
+
+def _mark_upstream_hit(throttle_key: str):
+    obj = _cache.get(throttle_key)
+    if not obj:
+        _cache[throttle_key] = {"ts": 0.0, "data": None, "status": 0, "last_upstream_ts": _now()}
+    else:
+        obj["last_upstream_ts"] = _now()
+
+# -------------------------------------------------------------------
+# Routes
+# -------------------------------------------------------------------
 @app.get("/")
 def root():
     return {"status": "CryptoVision backend is running"}
@@ -75,9 +111,7 @@ def health():
     return {"ok": True}
 
 # ------------------------------------------------------------
-# Proxy: /coins/markets (folosit de tabel)
-# - Cache TTL
-# - Dacă CoinGecko dă 429 -> returnăm ultimul răspuns bun (stale)
+# Proxy: /coins/markets
 # ------------------------------------------------------------
 @app.get("/coins/markets")
 def coins_markets(
@@ -101,107 +135,111 @@ def coins_markets(
 
     cache_key = _make_cache_key("/coins/markets", params)
 
-    # 0) Cache "last good" global (independent de query)
-    #    Cheie fixă, o folosim ca fallback universal
+    # last-good global: dacă query-ul curent pică, servim ultima listă bună
     last_good_key = "LAST_GOOD:/coins/markets"
+    throttle_key = "THROTTLE:/coins/markets"
 
-    # 1) Fresh cache pentru query exact
+    # 1) Dacă avem fresh cache pentru query exact -> HIT
     cached = _cache_get(cache_key)
     if cached:
         response.headers["X-Cache"] = "HIT"
         response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
         return cached["data"]
 
-    def try_upstream(p: dict):
-        r = session.get(url, params=p, timeout=20)
-        return r
+    # 2) Dacă nu putem lovi upstream (throttle), încercăm stale (query / last-good)
+    if not _can_hit_upstream(throttle_key):
+        stale_exact = _cache_get_stale(cache_key)
+        if stale_exact:
+            response.headers["X-Cache"] = "STALE-THROTTLE"
+            return stale_exact["data"]
 
-    # 2) Încercăm upstream cu parametrii ceruți
+        stale_last_good = _cache_get_stale(last_good_key)
+        if stale_last_good:
+            response.headers["X-Cache"] = "STALE-LAST-GOOD-THROTTLE"
+            return stale_last_good["data"]
+
+        return JSONResponse(
+            status_code=429,
+            content={"error": "Throttled to protect upstream. No cached data yet."}
+        )
+
+    # Marcam attempt upstream
+    _mark_upstream_hit(throttle_key)
+
+    # 3) Upstream call
     try:
-        r = try_upstream(params)
+        r = session.get(url, params=params, timeout=20)
 
+        # 3a) SUCCESS
         if r.status_code == 200:
             data = r.json()
             _cache_set(cache_key, data, status=200)
-            _cache_set(last_good_key, data, status=200)  # actualizăm și last-good
+            _cache_set(last_good_key, data, status=200)
+
             response.headers["X-Cache"] = "MISS"
             response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
             return data
 
-        # 3) Dacă e 429 -> încercăm fallback automat cu per_page mai mic (25, 10)
+        # 3b) RATE LIMITED: servim stale dacă există
         if r.status_code == 429:
-            for smaller in [25, 10]:
-                if smaller == per_page:
-                    continue
-                p2 = dict(params)
-                p2["per_page"] = smaller
-                r2 = try_upstream(p2)
-                if r2.status_code == 200:
-                    data2 = r2.json()
-                    # salvăm ca last_good (important)
-                    _cache_set(last_good_key, data2, status=200)
-                    # și cache pentru query-ul actual, ca să nu pice UI
-                    _cache_set(cache_key, data2, status=200)
+            stale_exact = _cache_get_stale(cache_key)
+            if stale_exact:
+                response.headers["X-Cache"] = "STALE-EXACT"
+                response.headers["X-Upstream-Status"] = "429"
+                ra = r.headers.get("Retry-After")
+                if ra:
+                    response.headers["Retry-After"] = ra
+                return stale_exact["data"]
 
-                    response.headers["X-Cache"] = "FALLBACK-SMALLER"
-                    response.headers["X-Upstream-Status"] = "429"
-                    response.headers["X-Fallback-Per-Page"] = str(smaller)
-                    return data2
-
-            # 4) Dacă tot 429, dăm "last good" global dacă există
-            last_good = _cache_get_stale(last_good_key)
-            if last_good and last_good.get("data") is not None:
+            stale_last_good = _cache_get_stale(last_good_key)
+            if stale_last_good:
                 response.headers["X-Cache"] = "STALE-LAST-GOOD"
                 response.headers["X-Upstream-Status"] = "429"
                 ra = r.headers.get("Retry-After")
                 if ra:
                     response.headers["Retry-After"] = ra
-                return last_good["data"]
+                return stale_last_good["data"]
 
-            # 5) Dacă nu există nimic în cache, returnăm 429 explicit
+            # Dacă nu există nimic cached încă
             return JSONResponse(
                 status_code=429,
                 content={
                     "error": "Upstream rate limited (CoinGecko). No cached data yet.",
-                    "detail": r.text[:400],
+                    "detail": r.text[:500],
                 },
             )
 
-        # alte erori upstream
+        # 3c) Other upstream errors
         return JSONResponse(
             status_code=502,
             content={
                 "error": "Upstream request failed (CoinGecko).",
                 "status_code": r.status_code,
-                "detail": r.text[:400],
+                "detail": r.text[:500],
             },
         )
 
     except requests.RequestException as e:
-        # 6) Dacă upstream e down/timeout, folosim last_good dacă există
-        last_good = _cache_get_stale(last_good_key)
-        if last_good and last_good.get("data") is not None:
-            response.headers["X-Cache"] = "STALE-LAST-GOOD"
+        # 4) Dacă upstream e down, încercăm stale
+        stale_last_good = _cache_get_stale(last_good_key)
+        if stale_last_good:
+            response.headers["X-Cache"] = "STALE-LAST-GOOD-EXCEPTION"
             response.headers["X-Upstream-Status"] = "EXCEPTION"
-            return last_good["data"]
+            return stale_last_good["data"]
 
         return JSONResponse(
             status_code=503,
-            content={
-                "error": "Upstream request exception (CoinGecko).",
-                "detail": str(e),
-            },
+            content={"error": "Upstream request exception (CoinGecko).", "detail": str(e)},
         )
 
 # ------------------------------------------------------------
-# Demo AI: /demo/prediction (folosit de panoul AI din app.html)
+# Demo AI: /demo/prediction (cum ai avut)
 # ------------------------------------------------------------
 @app.get("/demo/prediction")
 def demo_prediction(
     coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
     days: int = Query(90, ge=7, le=365, description="History window"),
 ):
-    # 1) Luăm prețul curent
     url_price = f"{COINGECKO_BASE}/simple/price"
     r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
     if r1.status_code != 200:
@@ -212,7 +250,6 @@ def demo_prediction(
     if last_price is None:
         return {"error": "Unknown coin_id or missing price", "coin_id": coin_id, "raw": price_json}
 
-    # 2) Luăm istoricul pentru RSI simplu (market_chart)
     url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
     r2 = session.get(url_chart, params={"vs_currency": "usd", "days": days, "interval": "daily"}, timeout=25)
     if r2.status_code != 200:
@@ -221,7 +258,6 @@ def demo_prediction(
     prices = (r2.json().get("prices") or [])
     closes = [p[1] for p in prices if isinstance(p, list) and len(p) >= 2]
 
-    # RSI(14) minimal, fără librării externe
     def rsi_14(series):
         if len(series) < 15:
             return None
@@ -244,7 +280,6 @@ def demo_prediction(
 
     rsi = rsi_14(closes)
 
-    # 3) Predicție DEMO (rule-based)
     if rsi is None:
         drift = 0.003
         label = "demo-neutral"
