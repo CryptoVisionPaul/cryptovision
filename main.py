@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 import json
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, List
 
 import requests
 from fastapi import FastAPI, Query, Response
@@ -11,43 +12,33 @@ from fastapi.responses import JSONResponse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# ==========================================================
-# App
-# ==========================================================
-app = FastAPI(title="CryptoVision Backend", version="1.0.0")
 
-# ==========================================================
+app = FastAPI(title="CryptoVision Backend")
+
+# ------------------------------------------------------------
 # CORS
-# - Recomandat: setează exact domeniul tău GitHub Pages
-# - Dacă vrei temporar "oricine", lasă ["*"] (fără credentials)
-# ==========================================================
-ALLOWED_ORIGINS = [
-    "https://cryptovisionpaul.github.io",
-    # "http://localhost:3000",
-    # "http://localhost:5173",
-]
-# Dacă nu vrei să restrângi încă, folosește: ["*"]
-if not ALLOWED_ORIGINS:
-    ALLOWED_ORIGINS = ["*"]
-
+# Pentru GitHub Pages e OK să fie "*" la început.
+# Când finalizezi, restrângi la domeniul tău:
+# allow_origins=["https://cryptovisionpaul.github.io"]
+# ------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,  # MUST be False when using "*" in allow_origins
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
 )
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
-# ==========================================================
-# HTTP session (stabil + rapid)
-# ==========================================================
+# ------------------------------------------------------------
+# HTTP Session + Retries (stabilitate + pool)
+# ------------------------------------------------------------
 session = requests.Session()
 
 retry = Retry(
     total=2,
-    backoff_factor=0.6,
+    backoff_factor=0.7,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET"],
     raise_on_status=False,
@@ -56,36 +47,31 @@ retry = Retry(
 adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
-
 session.headers.update(
     {
         "Accept": "application/json",
-        "User-Agent": "CryptoVision/1.0 (Render; contact: you)",
+        "User-Agent": "CryptoVision/1.0 (Render; GitHub Pages frontend)",
     }
 )
 
-# ==========================================================
-# Cache + Throttle (in-memory)
-# ==========================================================
-CACHE_TTL_SECONDS = 60          # "fresh" 60s
-CACHE_STALE_SECONDS = 15 * 60   # "stale allowed" 15 min
-THROTTLE_SECONDS = 45           # minim 45s între upstream call per cheie
+# ------------------------------------------------------------
+# In-memory cache + throttle (anti-429)
+# Render free: cache se poate reseta la restart / redeploy. OK.
+# ------------------------------------------------------------
+CACHE_TTL_SECONDS = 60          # "fresh" 60 sec
+CACHE_STALE_SECONDS = 15 * 60   # serve stale up to 15 min if upstream 429/down
+THROTTLE_SECONDS = 45           # minimum interval between upstream hits per endpoint-key
 
-# Cache structure:
-# _cache[key] = {
-#   "ts": float,            # data timestamp
-#   "data": Any,            # cached JSON
-#   "status": int,          # status that produced this data
-#   "last_upstream_ts": float, # last time we hit upstream for this key
-# }
 _cache: Dict[str, Dict[str, Any]] = {}
+
 
 def _now() -> float:
     return time.time()
 
-def _make_key(path: str, params: Dict[str, Any]) -> str:
-    # key determinist, stabil
+
+def _make_cache_key(path: str, params: Dict[str, Any]) -> str:
     return f"{path}:{json.dumps(params, sort_keys=True, separators=(',', ':'))}"
+
 
 def _cache_get_fresh(key: str) -> Optional[Dict[str, Any]]:
     obj = _cache.get(key)
@@ -96,6 +82,7 @@ def _cache_get_fresh(key: str) -> Optional[Dict[str, Any]]:
         return obj
     return None
 
+
 def _cache_get_stale(key: str) -> Optional[Dict[str, Any]]:
     obj = _cache.get(key)
     if not obj:
@@ -105,8 +92,9 @@ def _cache_get_stale(key: str) -> Optional[Dict[str, Any]]:
         return obj
     return None
 
+
 def _cache_set(key: str, data: Any, status: int = 200) -> None:
-    prev = _cache.get(key) or {}
+    prev = _cache.get(key, {})
     _cache[key] = {
         "ts": _now(),
         "data": data,
@@ -114,74 +102,51 @@ def _cache_set(key: str, data: Any, status: int = 200) -> None:
         "last_upstream_ts": float(prev.get("last_upstream_ts", 0.0)),
     }
 
-def _can_hit_upstream(key: str) -> bool:
-    obj = _cache.get(key)
+
+def _can_hit_upstream(throttle_key: str) -> bool:
+    obj = _cache.get(throttle_key)
     if not obj:
         return True
     last = float(obj.get("last_upstream_ts", 0.0) or 0.0)
     return (_now() - last) >= THROTTLE_SECONDS
 
-def _mark_upstream_hit(key: str) -> None:
-    obj = _cache.get(key)
+
+def _mark_upstream_hit(throttle_key: str) -> None:
+    obj = _cache.get(throttle_key)
     if not obj:
-        _cache[key] = {"ts": 0.0, "data": None, "status": 0, "last_upstream_ts": _now()}
+        _cache[throttle_key] = {"ts": 0.0, "data": None, "status": 0, "last_upstream_ts": _now()}
     else:
         obj["last_upstream_ts"] = _now()
 
-def _set_cache_headers(response: Response, *, cache_state: str, upstream_status: Optional[str] = None) -> None:
-    # private cache; SWR = browser poate folosi "stale" un pic fără să refacă imediat
-    response.headers["Cache-Control"] = f"private, max-age={CACHE_TTL_SECONDS}, stale-while-revalidate={CACHE_TTL_SECONDS}"
-    response.headers["X-Cache"] = cache_state
-    if upstream_status is not None:
-        response.headers["X-Upstream-Status"] = upstream_status
 
-def _safe_json_parse(text: str) -> Any:
+# ------------------------------------------------------------
+# Helpers: safe JSON parse
+# ------------------------------------------------------------
+def _safe_json(resp: requests.Response) -> Tuple[bool, Any]:
     try:
-        return json.loads(text)
+        return True, resp.json()
     except Exception:
-        return {"raw": text[:500]}
+        return False, resp.text
 
-def _upstream_get_json(
-    *,
-    url: str,
-    params: Dict[str, Any],
-    timeout: int,
-) -> Tuple[int, Any, str]:
-    """
-    Return (status_code, data_json_or_error, raw_text_snippet)
-    """
-    try:
-        r = session.get(url, params=params, timeout=timeout)
-        status = int(r.status_code)
 
-        if status == 200:
-            return status, r.json(), ""
-
-        # for non-200, keep small snippet
-        raw = (r.text or "")[:500]
-        # some CoinGecko errors are JSON inside text
-        parsed = _safe_json_parse(r.text or "")
-        return status, parsed, raw
-
-    except requests.RequestException as e:
-        return 0, {"error": "request_exception", "detail": str(e)}, str(e)[:500]
-
-# ==========================================================
+# ------------------------------------------------------------
 # Routes
-# ==========================================================
+# ------------------------------------------------------------
 @app.get("/")
 def root():
     return {"status": "CryptoVision backend is running"}
+
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+
 # ------------------------------------------------------------
-# Proxy: /coins/markets  (Top 50)
-# - cache fresh 60s
-# - stale up to 15 min if 429/exception
-# - throttle per unique params
+# Proxy: /coins/markets  (front-end table)
+# - cache (fresh)
+# - serve stale if 429/down
+# - throttle to protect CoinGecko
 # ------------------------------------------------------------
 @app.get("/coins/markets")
 def coins_markets(
@@ -193,41 +158,40 @@ def coins_markets(
     sparkline: bool = False,
     price_change_percentage: str = "1h,24h,7d",
 ):
-    path = "/coins/markets"
-    url = f"{COINGECKO_BASE}{path}"
-
+    url = f"{COINGECKO_BASE}/coins/markets"
     params = {
         "vs_currency": vs_currency,
         "order": order,
-        "per_page": int(per_page),
-        "page": int(page),
-        "sparkline": "true" if sparkline else "false",
+        "per_page": per_page,
+        "page": page,
+        "sparkline": str(sparkline).lower(),
         "price_change_percentage": price_change_percentage,
     }
 
-    cache_key = _make_key(path, params)
-    throttle_key = "THROTTLE:" + cache_key
+    cache_key = _make_cache_key("/coins/markets", params)
 
-    # fallback last good (independent of params)
+    # fallback “last good” for any query variant
     last_good_key = "LAST_GOOD:/coins/markets"
+    throttle_key = "THROTTLE:/coins/markets"
 
-    # 1) Fresh cache
+    # 1) Fresh cache exact
     cached = _cache_get_fresh(cache_key)
     if cached:
-        _set_cache_headers(response, cache_state="HIT")
+        response.headers["X-Cache"] = "HIT"
+        response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
         return cached["data"]
 
-    # 2) Throttle guard (per params)
+    # 2) If throttled, serve stale if possible
     if not _can_hit_upstream(throttle_key):
-        stale = _cache_get_stale(cache_key)
-        if stale:
-            _set_cache_headers(response, cache_state="STALE-THROTTLE")
-            return stale["data"]
+        stale_exact = _cache_get_stale(cache_key)
+        if stale_exact:
+            response.headers["X-Cache"] = "STALE-THROTTLE"
+            return stale_exact["data"]
 
-        stale_last_good = _cache_get_stale(last_good_key)
-        if stale_last_good:
-            _set_cache_headers(response, cache_state="STALE-LAST-GOOD-THROTTLE")
-            return stale_last_good["data"]
+        stale_last = _cache_get_stale(last_good_key)
+        if stale_last:
+            response.headers["X-Cache"] = "STALE-LAST-GOOD-THROTTLE"
+            return stale_last["data"]
 
         return JSONResponse(
             status_code=429,
@@ -237,295 +201,324 @@ def coins_markets(
     _mark_upstream_hit(throttle_key)
 
     # 3) Upstream call
-    status, data, raw = _upstream_get_json(url=url, params=params, timeout=20)
+    try:
+        r = session.get(url, params=params, timeout=20)
 
-    # 3a) success
-    if status == 200 and isinstance(data, list):
-        _cache_set(cache_key, data, status=200)
-        _cache_set(last_good_key, data, status=200)
-        _set_cache_headers(response, cache_state="MISS", upstream_status="200")
-        return data
+        if r.status_code == 200:
+            ok, data = _safe_json(r)
+            if not ok or not isinstance(data, list):
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": "Invalid JSON from upstream (CoinGecko)."},
+                )
 
-    # 3b) rate limited -> serve stale
-    if status == 429:
-        stale = _cache_get_stale(cache_key)
-        if stale:
-            _set_cache_headers(response, cache_state="STALE-EXACT", upstream_status="429")
-            return stale["data"]
+            _cache_set(cache_key, data, status=200)
+            _cache_set(last_good_key, data, status=200)
 
-        stale_last_good = _cache_get_stale(last_good_key)
-        if stale_last_good:
-            _set_cache_headers(response, cache_state="STALE-LAST-GOOD", upstream_status="429")
-            return stale_last_good["data"]
+            response.headers["X-Cache"] = "MISS"
+            response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
+            return data
+
+        if r.status_code == 429:
+            stale_exact = _cache_get_stale(cache_key)
+            if stale_exact:
+                response.headers["X-Cache"] = "STALE-EXACT"
+                response.headers["X-Upstream-Status"] = "429"
+                ra = r.headers.get("Retry-After")
+                if ra:
+                    response.headers["Retry-After"] = ra
+                return stale_exact["data"]
+
+            stale_last = _cache_get_stale(last_good_key)
+            if stale_last:
+                response.headers["X-Cache"] = "STALE-LAST-GOOD"
+                response.headers["X-Upstream-Status"] = "429"
+                ra = r.headers.get("Retry-After")
+                if ra:
+                    response.headers["Retry-After"] = ra
+                return stale_last["data"]
+
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Upstream rate limited (CoinGecko). No cached data yet.",
+                    "detail": (r.text or "")[:500],
+                },
+            )
 
         return JSONResponse(
-            status_code=429,
+            status_code=502,
             content={
-                "error": "Upstream rate limited (CoinGecko). No cached data yet.",
-                "detail": data if isinstance(data, dict) else {"raw": raw},
+                "error": "Upstream request failed (CoinGecko).",
+                "status_code": r.status_code,
+                "detail": (r.text or "")[:500],
             },
         )
 
-    # 3c) upstream exception or other errors -> serve last good if possible
-    stale_last_good = _cache_get_stale(last_good_key)
-    if stale_last_good:
-        _set_cache_headers(response, cache_state="STALE-LAST-GOOD-UPSTREAM-ERROR", upstream_status=str(status or "EXCEPTION"))
-        return stale_last_good["data"]
+    except requests.RequestException as e:
+        stale_last = _cache_get_stale(last_good_key)
+        if stale_last:
+            response.headers["X-Cache"] = "STALE-LAST-GOOD-EXCEPTION"
+            response.headers["X-Upstream-Status"] = "EXCEPTION"
+            return stale_last["data"]
 
-    return JSONResponse(
-        status_code=502,
-        content={
-            "error": "Upstream request failed (CoinGecko).",
-            "status_code": status or 0,
-            "detail": data if isinstance(data, dict) else {"raw": raw},
-        },
-    )
+        return JSONResponse(
+            status_code=503,
+            content={"error": "Upstream request exception (CoinGecko).", "detail": str(e)},
+        )
+
 
 # ------------------------------------------------------------
-# Proxy: /coins/{coin_id}/market_chart
-# - folosit pentru chart în UI (ideal prin backend ca să nu lovești 429 din browser)
-# - cache: fresh 60s, stale 15 min
-# - throttle per params
+# Indicators + simple predictive model (non-demo)
+# Endpoint: /ai/predict
+# - folosește history din CoinGecko market_chart
+# - calculează drift + volatilitate (log-returns) + RSI
+# - produce o predicție pentru următorul pas al timeframe-ului cerut
+# NOTĂ: este “model statistic” (nu LSTM), dar nu mai e “demo rule-only”.
 # ------------------------------------------------------------
-@app.get("/coins/{coin_id}/market_chart")
-def market_chart(
-    coin_id: str,
-    response: Response,
-    vs_currency: str = "usd",
-    days: int = 7,
-    interval: str = "hourly",
+
+def _rsi_14(series: List[float]) -> Optional[float]:
+    if len(series) < 15:
+        return None
+    gains = []
+    losses = []
+    # ultimele 14 diferențe
+    for i in range(-14, 0):
+        diff = series[i] - series[i - 1]
+        if diff >= 0:
+            gains.append(diff)
+            losses.append(0.0)
+        else:
+            gains.append(0.0)
+            losses.append(-diff)
+    avg_gain = sum(gains) / 14.0
+    avg_loss = sum(losses) / 14.0
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _mean(xs: List[float]) -> float:
+    return sum(xs) / max(1, len(xs))
+
+
+def _stdev(xs: List[float]) -> float:
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    m = _mean(xs)
+    var = sum((x - m) ** 2 for x in xs) / (n - 1)
+    return math.sqrt(max(0.0, var))
+
+
+def _timeframe_to_days(timeframe: str, days: int) -> Tuple[int, str]:
+    """
+    CoinGecko market_chart are interval=hourly/daily.
+    Pentru TF mici, folosim hourly + days limitat.
+    """
+    tf = timeframe.strip().lower()
+    if tf in ("30m", "30min", "30-min"):
+        # 7 zile hourly e suficient, dar acceptăm days primit (max 30)
+        return min(max(days, 2), 30), "hourly"
+    if tf in ("1h", "60m", "1hour"):
+        return min(max(days, 2), 60), "hourly"
+    if tf in ("4h", "240m", "4hour"):
+        return min(max(days, 3), 90), "hourly"
+    # default 1d
+    return min(max(days, 7), 365), "daily"
+
+
+def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[float, float, float]:
+    """
+    Model simplu pe log-returns:
+    - mu = media log-return
+    - sigma = stdev log-return
+    Predicție: P_next = P_last * exp(mu*h)
+    Interval ~ exp(±1*sigma*sqrt(h))
+    Return: (pred, lo68, hi68)
+    """
+    if len(closes) < 3:
+        last = float(closes[-1])
+        return last, last, last
+
+    rets = []
+    for i in range(1, len(closes)):
+        p0 = float(closes[i - 1])
+        p1 = float(closes[i])
+        if p0 > 0 and p1 > 0:
+            rets.append(math.log(p1 / p0))
+
+    if len(rets) < 2:
+        last = float(closes[-1])
+        return last, last, last
+
+    mu = _mean(rets)
+    sigma = _stdev(rets)
+
+    h = max(1, int(horizon_steps))
+    last = float(closes[-1])
+
+    pred = last * math.exp(mu * h)
+    # 68% interval (≈ 1 sigma)
+    spread = sigma * math.sqrt(h)
+    lo = last * math.exp((mu - spread) * h)
+    hi = last * math.exp((mu + spread) * h)
+
+    return float(pred), float(lo), float(hi)
+
+
+@app.get("/ai/predict")
+def ai_predict(
+    coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
+    days: int = Query(90, ge=7, le=365, description="History window"),
+    timeframe: str = Query("1d", description="30m | 1h | 4h | 1d"),
 ):
-    path = f"/coins/{coin_id}/market_chart"
-    url = f"{COINGECKO_BASE}{path}"
+    # Throttle/caching separat pentru AI (ca să nu spamezi market_chart)
+    tf_norm = timeframe.strip().lower()
+    days_eff, interval = _timeframe_to_days(tf_norm, days)
 
-    params = {
-        "vs_currency": vs_currency,
-        "days": int(days),
-        "interval": interval,
-    }
-
-    cache_key = _make_key(path, params)
-    throttle_key = "THROTTLE:" + cache_key
-    last_good_key = f"LAST_GOOD:{path}"
+    params = {"coin_id": coin_id, "days": days_eff, "interval": interval, "tf": tf_norm}
+    cache_key = _make_cache_key("/ai/predict", params)
+    throttle_key = f"THROTTLE:/ai/predict:{coin_id}:{tf_norm}"
 
     cached = _cache_get_fresh(cache_key)
     if cached:
-        _set_cache_headers(response, cache_state="HIT")
         return cached["data"]
 
     if not _can_hit_upstream(throttle_key):
         stale = _cache_get_stale(cache_key)
         if stale:
-            _set_cache_headers(response, cache_state="STALE-THROTTLE")
             return stale["data"]
-
-        stale_last = _cache_get_stale(last_good_key)
-        if stale_last:
-            _set_cache_headers(response, cache_state="STALE-LAST-GOOD-THROTTLE")
-            return stale_last["data"]
-
         return JSONResponse(
             status_code=429,
-            content={"error": "Throttled to protect upstream. No cached data yet."},
+            content={"error": "Throttled AI endpoint. Please wait and retry."},
         )
 
     _mark_upstream_hit(throttle_key)
 
-    status, data, raw = _upstream_get_json(url=url, params=params, timeout=25)
-
-    if status == 200 and isinstance(data, dict):
-        _cache_set(cache_key, data, status=200)
-        _cache_set(last_good_key, data, status=200)
-        _set_cache_headers(response, cache_state="MISS", upstream_status="200")
-        return data
-
-    if status == 429:
-        stale = _cache_get_stale(cache_key)
-        if stale:
-            _set_cache_headers(response, cache_state="STALE-EXACT", upstream_status="429")
-            return stale["data"]
-
-        stale_last = _cache_get_stale(last_good_key)
-        if stale_last:
-            _set_cache_headers(response, cache_state="STALE-LAST-GOOD", upstream_status="429")
-            return stale_last["data"]
-
+    # 1) current price (fast)
+    url_price = f"{COINGECKO_BASE}/simple/price"
+    r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
+    if r1.status_code != 200:
         return JSONResponse(
-            status_code=429,
-            content={
-                "error": "Upstream rate limited (CoinGecko). No cached data yet.",
-                "detail": data if isinstance(data, dict) else {"raw": raw},
-            },
+            status_code=502,
+            content={"error": "Failed to fetch price", "status": r1.status_code, "detail": (r1.text or "")[:300]},
         )
 
-    stale_last = _cache_get_stale(last_good_key)
-    if stale_last:
-        _set_cache_headers(response, cache_state="STALE-LAST-GOOD-UPSTREAM-ERROR", upstream_status=str(status or "EXCEPTION"))
-        return stale_last["data"]
+    ok1, price_json = _safe_json(r1)
+    if not ok1 or not isinstance(price_json, dict):
+        return JSONResponse(status_code=502, content={"error": "Invalid price JSON from upstream."})
 
-    return JSONResponse(
-        status_code=502,
-        content={
-            "error": "Upstream request failed (CoinGecko).",
-            "status_code": status or 0,
-            "detail": data if isinstance(data, dict) else {"raw": raw},
-        },
+    last_price = (price_json.get(coin_id) or {}).get("usd")
+    if last_price is None:
+        return JSONResponse(status_code=404, content={"error": "Unknown coin_id or missing price", "coin_id": coin_id})
+
+    # 2) history
+    url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
+    r2 = session.get(
+        url_chart,
+        params={"vs_currency": "usd", "days": days_eff, "interval": interval},
+        timeout=25,
     )
+    if r2.status_code == 429:
+        stale = _cache_get_stale(cache_key)
+        if stale:
+            return stale["data"]
+        return JSONResponse(
+            status_code=429,
+            content={"error": "Upstream rate-limited (CoinGecko) for history. Try later."},
+        )
+
+    if r2.status_code != 200:
+        return JSONResponse(
+            status_code=502,
+            content={"error": "Failed to fetch history", "status": r2.status_code, "detail": (r2.text or "")[:300]},
+        )
+
+    ok2, chart_json = _safe_json(r2)
+    if not ok2 or not isinstance(chart_json, dict):
+        return JSONResponse(status_code=502, content={"error": "Invalid history JSON from upstream."})
+
+    prices = chart_json.get("prices") or []
+    closes = [float(p[1]) for p in prices if isinstance(p, list) and len(p) >= 2 and p[1] is not None]
+
+    if len(closes) < 10:
+        return JSONResponse(status_code=502, content={"error": "Not enough history data to predict."})
+
+    rsi = _rsi_14(closes)
+
+    # 3) Forecast next step (1 step ahead in the chosen TF)
+    predicted, lo68, hi68 = _forecast_next_price(closes, horizon_steps=1)
+
+    # 4) Small RSI-based adjustment (soft factor, not “demo rules”)
+    #    very light effect (±0.35%) to avoid silly outputs
+    adj = 0.0
+    if rsi is not None:
+        if rsi < 35:
+            adj = +0.0035
+        elif rsi > 65:
+            adj = -0.0035
+
+    predicted_adj = predicted * (1.0 + adj)
+
+    payload = {
+        "coin_id": coin_id,
+        "timeframe": tf_norm,
+        "days_used": days_eff,
+        "interval": interval,
+        "last_price": float(last_price),
+        "predicted_price": float(predicted_adj),
+        "prediction_interval_68": {"low": float(lo68), "high": float(hi68)},
+        "indicators": {"rsi": rsi},
+        "model": "statistical-returns-v1",
+        "note": "Statistical forecast (log-returns + volatility). Educational only.",
+    }
+
+    _cache_set(cache_key, payload, status=200)
+    return payload
+
 
 # ------------------------------------------------------------
-# Helper (cached): /simple/price
-# - folosit intern de demo_prediction
-# ------------------------------------------------------------
-def _get_simple_price_cached(coin_id: str) -> Tuple[Optional[float], Optional[dict]]:
-    path = "/simple/price"
-    url = f"{COINGECKO_BASE}{path}"
-    params = {"ids": coin_id, "vs_currencies": "usd"}
-
-    cache_key = _make_key("INTERNAL" + path, params)
-    throttle_key = "THROTTLE:" + cache_key
-    last_good_key = f"LAST_GOOD:INTERNAL{path}:{coin_id}"
-
-    cached = _cache_get_fresh(cache_key)
-    if cached and isinstance(cached["data"], dict):
-        price = (cached["data"].get(coin_id) or {}).get("usd")
-        return float(price) if price is not None else None, None
-
-    if _can_hit_upstream(throttle_key):
-        _mark_upstream_hit(throttle_key)
-        status, data, _raw = _upstream_get_json(url=url, params=params, timeout=20)
-        if status == 200 and isinstance(data, dict):
-            _cache_set(cache_key, data, status=200)
-            _cache_set(last_good_key, data, status=200)
-            price = (data.get(coin_id) or {}).get("usd")
-            return float(price) if price is not None else None, None
-
-        # if failed, try stale
-        stale_last = _cache_get_stale(last_good_key)
-        if stale_last and isinstance(stale_last["data"], dict):
-            price = (stale_last["data"].get(coin_id) or {}).get("usd")
-            return float(price) if price is not None else None, {"warning": "stale_price_used", "upstream_status": status, "detail": data}
-
-        return None, {"error": "price_fetch_failed", "upstream_status": status, "detail": data}
-
-    # throttled -> stale
-    stale_last = _cache_get_stale(last_good_key)
-    if stale_last and isinstance(stale_last["data"], dict):
-        price = (stale_last["data"].get(coin_id) or {}).get("usd")
-        return float(price) if price is not None else None, {"warning": "stale_price_used_throttle"}
-    return None, {"error": "price_throttled_no_cache"}
-
-# ------------------------------------------------------------
-# Helper (cached): market_chart daily for RSI
-# ------------------------------------------------------------
-def _get_market_chart_daily_cached(coin_id: str, days: int) -> Tuple[Optional[list], Optional[dict]]:
-    path = f"/coins/{coin_id}/market_chart"
-    url = f"{COINGECKO_BASE}{path}"
-
-    params = {"vs_currency": "usd", "days": int(days), "interval": "daily"}
-
-    cache_key = _make_key("INTERNAL" + path, params)
-    throttle_key = "THROTTLE:" + cache_key
-    last_good_key = f"LAST_GOOD:INTERNAL{path}:{days}"
-
-    cached = _cache_get_fresh(cache_key)
-    if cached and isinstance(cached["data"], dict):
-        prices = cached["data"].get("prices") or []
-        return prices, None
-
-    if _can_hit_upstream(throttle_key):
-        _mark_upstream_hit(throttle_key)
-        status, data, _raw = _upstream_get_json(url=url, params=params, timeout=25)
-        if status == 200 and isinstance(data, dict):
-            _cache_set(cache_key, data, status=200)
-            _cache_set(last_good_key, data, status=200)
-            prices = data.get("prices") or []
-            return prices, None
-
-        stale_last = _cache_get_stale(last_good_key)
-        if stale_last and isinstance(stale_last["data"], dict):
-            prices = stale_last["data"].get("prices") or []
-            return prices, {"warning": "stale_history_used", "upstream_status": status, "detail": data}
-
-        return None, {"error": "history_fetch_failed", "upstream_status": status, "detail": data}
-
-    stale_last = _cache_get_stale(last_good_key)
-    if stale_last and isinstance(stale_last["data"], dict):
-        prices = stale_last["data"].get("prices") or []
-        return prices, {"warning": "stale_history_used_throttle"}
-    return None, {"error": "history_throttled_no_cache"}
-
-# ------------------------------------------------------------
-# Demo AI: /demo/prediction
-# - acum are cache implicit pentru price + history
+# Backward compatibility: keep your old demo endpoint if UI still calls it
 # ------------------------------------------------------------
 @app.get("/demo/prediction")
 def demo_prediction(
     coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
-    days: int = Query(90, ge=7, le=365, description="History window for RSI"),
+    days: int = Query(90, ge=7, le=365, description="History window"),
 ):
-    coin_id = coin_id.strip().lower()
+    # Keep old behaviour, but we recommend switching UI to /ai/predict
+    url_price = f"{COINGECKO_BASE}/simple/price"
+    r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
+    if r1.status_code != 200:
+        return {"error": "Failed to fetch price", "coin_id": coin_id, "status": r1.status_code, "body": r1.text}
 
-    last_price, price_meta = _get_simple_price_cached(coin_id)
+    price_json = r1.json()
+    last_price = (price_json.get(coin_id) or {}).get("usd")
     if last_price is None:
-        return JSONResponse(
-            status_code=502,
-            content={"error": "Failed to fetch price", "coin_id": coin_id, "detail": price_meta},
-        )
+        return {"error": "Unknown coin_id or missing price", "coin_id": coin_id, "raw": price_json}
 
-    prices, hist_meta = _get_market_chart_daily_cached(coin_id, days)
-    if prices is None:
-        return JSONResponse(
-            status_code=502,
-            content={"error": "Failed to fetch history", "coin_id": coin_id, "detail": hist_meta},
-        )
+    url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
+    r2 = session.get(url_chart, params={"vs_currency": "usd", "days": days, "interval": "daily"}, timeout=25)
+    if r2.status_code != 200:
+        return {"error": "Failed to fetch history", "coin_id": coin_id, "status": r2.status_code, "body": r2.text}
 
+    prices = (r2.json().get("prices") or [])
     closes = [p[1] for p in prices if isinstance(p, list) and len(p) >= 2]
 
-    def rsi_14(series: list) -> Optional[float]:
-        if len(series) < 15:
-            return None
-        gains = []
-        losses = []
-        # last 15 closes -> 14 diffs
-        recent = series[-15:]
-        for i in range(1, 15):
-            diff = recent[i] - recent[i - 1]
-            if diff >= 0:
-                gains.append(diff)
-                losses.append(0.0)
-            else:
-                gains.append(0.0)
-                losses.append(-diff)
-        avg_gain = sum(gains) / 14.0
-        avg_loss = sum(losses) / 14.0
-        if avg_loss == 0:
-            return 100.0
-        rs = avg_gain / avg_loss
-        return 100.0 - (100.0 / (1.0 + rs))
+    rsi = _rsi_14([float(x) for x in closes if x is not None])
 
-    rsi = rsi_14(closes)
-
-    # Demo drift rule-based
-    if rsi is None:
-        drift = 0.003
-        label = "demo-neutral"
-    elif rsi < 40:
-        drift = 0.015
-        label = "demo-rebound"
-    elif rsi > 60:
-        drift = -0.010
-        label = "demo-cooldown"
-    else:
-        drift = 0.003
-        label = "demo-neutral"
+    drift = 0.003
+    label = "demo-neutral"
+    if rsi is not None:
+        if rsi < 40:
+            drift = 0.015
+            label = "demo-rebound"
+        elif rsi > 60:
+            drift = -0.010
+            label = "demo-cooldown"
 
     predicted_price = float(last_price) * (1.0 + drift)
-
-    meta = {}
-    if price_meta:
-        meta["price"] = price_meta
-    if hist_meta:
-        meta["history"] = hist_meta
 
     return {
         "coin_id": coin_id,
@@ -534,6 +527,5 @@ def demo_prediction(
         "last_price": float(last_price),
         "predicted_price": float(predicted_price),
         "indicators": {"rsi": rsi},
-        "note": "Demo endpoint (rule-based). Replace with real AI later.",
-        "meta": meta or None,
+        "note": "Demo endpoint (rule-based). Prefer /ai/predict.",
     }
