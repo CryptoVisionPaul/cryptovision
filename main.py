@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import math
 import json
+import math
 import time
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, Query, Response
@@ -12,18 +12,23 @@ from fastapi.responses import JSONResponse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
+# ==========================================================
+# App
+# ==========================================================
 app = FastAPI(title="CryptoVision Backend")
 
-# ------------------------------------------------------------
+# ==========================================================
 # CORS
-# Pentru GitHub Pages e OK să fie "*" la început.
-# Când finalizezi, restrângi la domeniul tău:
-# allow_origins=["https://cryptovisionpaul.github.io"]
-# ------------------------------------------------------------
+# - Pentru GitHub Pages: permite strict domeniul tău.
+# - IMPORTANT: allow_credentials=False => nu e nevoie de wildcard + credentials.
+# ==========================================================
+ALLOWED_ORIGINS = [
+    "https://cryptovisionpaul.github.io",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://cryptovisionpaul.github.io"]
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
@@ -31,9 +36,9 @@ app.add_middleware(
 
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
-# ------------------------------------------------------------
-# HTTP Session + Retries (stabilitate + pool)
-# ------------------------------------------------------------
+# ==========================================================
+# HTTP session + retries (stabilitate + pool)
+# ==========================================================
 session = requests.Session()
 
 retry = Retry(
@@ -54,17 +59,18 @@ session.headers.update(
     }
 )
 
-# ------------------------------------------------------------
+# ==========================================================
 # In-memory cache + throttle (anti-429)
-# Render free: cache se poate reseta la restart / redeploy. OK.
-# ------------------------------------------------------------
+# Render free: cache se poate reseta la restart / redeploy.
+# ==========================================================
 CACHE_TTL_SECONDS = 60          # markets/predict "fresh" 60 sec
 CACHE_STALE_SECONDS = 15 * 60   # stale up to 15 min
 THROTTLE_SECONDS = 45           # min interval upstream hits per throttle key
 
-# Pentru CHART folosim TTL separat, mai lung (ca să reducem rate-limit)
+# Pentru CHART folosim TTL separat, mai lung (reduce rate-limit)
 CHART_TTL_SECONDS = 5 * 60      # 5 min fresh
 CHART_STALE_SECONDS = 60 * 60   # 60 min stale fallback
+CHART_THROTTLE_SECONDS = 25     # chart poate fi apelat des din UI; îl protejăm mai agresiv
 
 _cache: Dict[str, Dict[str, Any]] = {}
 
@@ -74,10 +80,11 @@ def _now() -> float:
 
 
 def _make_cache_key(path: str, params: Dict[str, Any]) -> str:
+    # cheie deterministă
     return f"{path}:{json.dumps(params, sort_keys=True, separators=(',', ':'))}"
 
 
-def _cache_get_fresh(key: str, ttl_seconds: int = CACHE_TTL_SECONDS) -> Optional[Dict[str, Any]]:
+def _cache_get_fresh(key: str, ttl_seconds: int) -> Optional[Dict[str, Any]]:
     obj = _cache.get(key)
     if not obj:
         return None
@@ -87,7 +94,7 @@ def _cache_get_fresh(key: str, ttl_seconds: int = CACHE_TTL_SECONDS) -> Optional
     return None
 
 
-def _cache_get_stale(key: str, stale_seconds: int = CACHE_STALE_SECONDS) -> Optional[Dict[str, Any]]:
+def _cache_get_stale(key: str, stale_seconds: int) -> Optional[Dict[str, Any]]:
     obj = _cache.get(key)
     if not obj:
         return None
@@ -107,7 +114,7 @@ def _cache_set(key: str, data: Any, status: int = 200) -> None:
     }
 
 
-def _can_hit_upstream(throttle_key: str, throttle_seconds: int = THROTTLE_SECONDS) -> bool:
+def _can_hit_upstream(throttle_key: str, throttle_seconds: int) -> bool:
     obj = _cache.get(throttle_key)
     if not obj:
         return True
@@ -130,9 +137,13 @@ def _safe_json(resp: requests.Response) -> Tuple[bool, Any]:
         return False, resp.text
 
 
-# ------------------------------------------------------------
+def _clamp_int(v: int, lo: int, hi: int) -> int:
+    return max(lo, min(hi, v))
+
+
+# ==========================================================
 # Routes
-# ------------------------------------------------------------
+# ==========================================================
 @app.get("/")
 def root():
     return {"status": "CryptoVision backend is running"}
@@ -143,16 +154,16 @@ def health():
     return {"ok": True}
 
 
-# ------------------------------------------------------------
+# ==========================================================
 # Proxy: /coins/markets
-# ------------------------------------------------------------
+# ==========================================================
 @app.get("/coins/markets")
 def coins_markets(
     response: Response,
     vs_currency: str = "usd",
     order: str = "market_cap_desc",
-    per_page: int = 50,
-    page: int = 1,
+    per_page: int = Query(50, ge=1, le=250),
+    page: int = Query(1, ge=1, le=50),
     sparkline: bool = False,
     price_change_percentage: str = "1h,24h,7d",
 ):
@@ -176,6 +187,7 @@ def coins_markets(
         response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
         return cached["data"]
 
+    # throttle => serve stale
     if not _can_hit_upstream(throttle_key, throttle_seconds=THROTTLE_SECONDS):
         stale_exact = _cache_get_stale(cache_key, stale_seconds=CACHE_STALE_SECONDS)
         if stale_exact:
@@ -229,12 +241,19 @@ def coins_markets(
 
             return JSONResponse(
                 status_code=429,
-                content={"error": "Upstream rate limited (CoinGecko). No cached data yet.", "detail": (r.text or "")[:500]},
+                content={
+                    "error": "Upstream rate limited (CoinGecko). No cached data yet.",
+                    "detail": (r.text or "")[:500],
+                },
             )
 
         return JSONResponse(
             status_code=502,
-            content={"error": "Upstream request failed (CoinGecko).", "status_code": r.status_code, "detail": (r.text or "")[:500]},
+            content={
+                "error": "Upstream request failed (CoinGecko).",
+                "status_code": r.status_code,
+                "detail": (r.text or "")[:500],
+            },
         )
 
     except requests.RequestException as e:
@@ -247,23 +266,28 @@ def coins_markets(
         return JSONResponse(status_code=503, content={"error": "Upstream request exception (CoinGecko).", "detail": str(e)})
 
 
-# ------------------------------------------------------------
-# Proxy: /chart  (IMPORTANT: UI chart must use backend, not CoinGecko direct)
+# ==========================================================
+# Proxy: /chart
 # UI: /chart?coin_id=bitcoin&vs_currency=usd&days=7&interval=hourly
-# ------------------------------------------------------------
+# IMPORTANT: UI chart should use backend to reduce 429 risk.
+# ==========================================================
 @app.get("/chart")
 def chart(
     response: Response,
-    coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
-    vs_currency: str = Query("usd"),
+    coin_id: str = Query(..., min_length=1, max_length=128, description="CoinGecko coin id, ex: bitcoin"),
+    vs_currency: str = Query("usd", min_length=1, max_length=16),
     days: int = Query(7, ge=1, le=90),
     interval: str = Query("hourly", description="hourly | daily"),
 ):
+    interval_norm = interval.strip().lower()
+    if interval_norm not in ("hourly", "daily"):
+        return JSONResponse(status_code=422, content={"error": "Invalid interval. Use 'hourly' or 'daily'."})
+
     url = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
-    params = {"vs_currency": vs_currency, "days": days, "interval": interval}
+    params = {"vs_currency": vs_currency, "days": days, "interval": interval_norm}
 
     cache_key = _make_cache_key("/chart", {"coin_id": coin_id, **params})
-    throttle_key = f"THROTTLE:/chart:{coin_id}:{days}:{interval}"
+    throttle_key = f"THROTTLE:/chart:{coin_id}:{days}:{interval_norm}"
 
     cached = _cache_get_fresh(cache_key, ttl_seconds=CHART_TTL_SECONDS)
     if cached:
@@ -271,7 +295,7 @@ def chart(
         response.headers["Cache-Control"] = f"public, max-age={CHART_TTL_SECONDS}"
         return cached["data"]
 
-    if not _can_hit_upstream(throttle_key, throttle_seconds=THROTTLE_SECONDS):
+    if not _can_hit_upstream(throttle_key, throttle_seconds=CHART_THROTTLE_SECONDS):
         stale = _cache_get_stale(cache_key, stale_seconds=CHART_STALE_SECONDS)
         if stale:
             response.headers["X-Cache"] = "STALE-THROTTLE"
@@ -288,11 +312,14 @@ def chart(
             if not ok or not isinstance(data, dict) or "prices" not in data:
                 return JSONResponse(status_code=502, content={"error": "Invalid chart JSON from upstream."})
 
-            _cache_set(cache_key, data, status=200)
+            # Reduce payload size slightly (optional): keep only prices
+            payload = {"prices": data.get("prices") or []}
+
+            _cache_set(cache_key, payload, status=200)
 
             response.headers["X-Cache"] = "MISS"
             response.headers["Cache-Control"] = f"public, max-age={CHART_TTL_SECONDS}"
-            return data
+            return payload
 
         if r.status_code == 429:
             stale = _cache_get_stale(cache_key, stale_seconds=CHART_STALE_SECONDS)
@@ -321,14 +348,14 @@ def chart(
         return JSONResponse(status_code=503, content={"error": "Chart upstream exception.", "detail": str(e)})
 
 
-# ------------------------------------------------------------
-# Indicators + model statistic (non-demo): /ai/predict
-# ------------------------------------------------------------
+# ==========================================================
+# Indicators + statistical model (non-demo): /ai/predict
+# ==========================================================
 def _rsi_14(series: List[float]) -> Optional[float]:
     if len(series) < 15:
         return None
-    gains = []
-    losses = []
+    gains: List[float] = []
+    losses: List[float] = []
     for i in range(-14, 0):
         diff = series[i] - series[i - 1]
         if diff >= 0:
@@ -359,17 +386,29 @@ def _stdev(xs: List[float]) -> float:
 
 
 def _timeframe_to_days(timeframe: str, days: int) -> Tuple[int, str]:
+    """
+    CoinGecko market_chart supports interval=hourly/daily.
+    For small TF: use hourly and clamp days.
+    """
     tf = timeframe.strip().lower()
     if tf in ("30m", "30min", "30-min"):
-        return min(max(days, 2), 30), "hourly"
+        return _clamp_int(days, 2, 30), "hourly"
     if tf in ("1h", "60m", "1hour"):
-        return min(max(days, 2), 60), "hourly"
+        return _clamp_int(days, 2, 60), "hourly"
     if tf in ("4h", "240m", "4hour"):
-        return min(max(days, 3), 90), "hourly"
-    return min(max(days, 7), 365), "daily"
+        return _clamp_int(days, 3, 90), "hourly"
+    return _clamp_int(days, 7, 365), "daily"
 
 
 def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[float, float, float]:
+    """
+    Model on log-returns:
+      mu = mean(log-return), sigma = stdev(log-return)
+    Forecast: P_next = P_last * exp(mu*h)
+    Interval (68%): exp(±1*sigma*sqrt(h))
+    """
+    if not closes:
+        return 0.0, 0.0, 0.0
     if len(closes) < 3:
         last = float(closes[-1])
         return last, last, last
@@ -387,7 +426,6 @@ def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[f
 
     mu = _mean(rets)
     sigma = _stdev(rets)
-
     h = max(1, int(horizon_steps))
     last = float(closes[-1])
 
@@ -403,7 +441,7 @@ def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[f
 @app.get("/ai/predict")
 def ai_predict(
     response: Response,
-    coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
+    coin_id: str = Query(..., min_length=1, max_length=128, description="CoinGecko coin id, ex: bitcoin"),
     days: int = Query(90, ge=7, le=365, description="History window"),
     timeframe: str = Query("1d", description="30m | 1h | 4h | 1d"),
 ):
@@ -417,6 +455,7 @@ def ai_predict(
     cached = _cache_get_fresh(cache_key, ttl_seconds=CACHE_TTL_SECONDS)
     if cached:
         response.headers["X-Cache"] = "HIT"
+        response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
         return cached["data"]
 
     if not _can_hit_upstream(throttle_key, throttle_seconds=THROTTLE_SECONDS):
@@ -428,79 +467,96 @@ def ai_predict(
 
     _mark_upstream_hit(throttle_key)
 
-    # 1) current price
-    url_price = f"{COINGECKO_BASE}/simple/price"
-    r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
-    if r1.status_code != 200:
-        return JSONResponse(status_code=502, content={"error": "Failed to fetch price", "status": r1.status_code, "detail": (r1.text or "")[:300]})
+    try:
+        # 1) current price
+        url_price = f"{COINGECKO_BASE}/simple/price"
+        r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
+        if r1.status_code != 200:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "Failed to fetch price", "status": r1.status_code, "detail": (r1.text or "")[:300]},
+            )
 
-    ok1, price_json = _safe_json(r1)
-    if not ok1 or not isinstance(price_json, dict):
-        return JSONResponse(status_code=502, content={"error": "Invalid price JSON from upstream."})
+        ok1, price_json = _safe_json(r1)
+        if not ok1 or not isinstance(price_json, dict):
+            return JSONResponse(status_code=502, content={"error": "Invalid price JSON from upstream."})
 
-    last_price = (price_json.get(coin_id) or {}).get("usd")
-    if last_price is None:
-        return JSONResponse(status_code=404, content={"error": "Unknown coin_id or missing price", "coin_id": coin_id})
+        last_price = (price_json.get(coin_id) or {}).get("usd")
+        if last_price is None:
+            return JSONResponse(status_code=404, content={"error": "Unknown coin_id or missing price", "coin_id": coin_id})
 
-    # 2) history
-    url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
-    r2 = session.get(url_chart, params={"vs_currency": "usd", "days": days_eff, "interval": interval}, timeout=25)
+        # 2) history
+        url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
+        r2 = session.get(url_chart, params={"vs_currency": "usd", "days": days_eff, "interval": interval}, timeout=25)
 
-    if r2.status_code == 429:
+        if r2.status_code == 429:
+            stale = _cache_get_stale(cache_key, stale_seconds=CACHE_STALE_SECONDS)
+            if stale:
+                response.headers["X-Cache"] = "STALE-429"
+                response.headers["X-Upstream-Status"] = "429"
+                return stale["data"]
+            return JSONResponse(status_code=429, content={"error": "Upstream rate-limited (CoinGecko) for history. Try later."})
+
+        if r2.status_code != 200:
+            return JSONResponse(
+                status_code=502,
+                content={"error": "Failed to fetch history", "status": r2.status_code, "detail": (r2.text or "")[:300]},
+            )
+
+        ok2, chart_json = _safe_json(r2)
+        if not ok2 or not isinstance(chart_json, dict):
+            return JSONResponse(status_code=502, content={"error": "Invalid history JSON from upstream."})
+
+        prices = chart_json.get("prices") or []
+        closes = [float(p[1]) for p in prices if isinstance(p, list) and len(p) >= 2 and p[1] is not None]
+
+        if len(closes) < 10:
+            return JSONResponse(status_code=502, content={"error": "Not enough history data to predict."})
+
+        rsi = _rsi_14(closes)
+        predicted, lo68, hi68 = _forecast_next_price(closes, horizon_steps=1)
+
+        # soft RSI adjustment (±0.35%)
+        adj = 0.0
+        if rsi is not None:
+            if rsi < 35:
+                adj = +0.0035
+            elif rsi > 65:
+                adj = -0.0035
+
+        predicted_adj = predicted * (1.0 + adj)
+
+        payload = {
+            "coin_id": coin_id,
+            "timeframe": tf_norm,
+            "days_used": days_eff,
+            "interval": interval,
+            "last_price": float(last_price),
+            "predicted_price": float(predicted_adj),
+            "prediction_interval_68": {"low": float(lo68), "high": float(hi68)},
+            "indicators": {"rsi": rsi},
+            "model": "statistical-returns-v1",
+            "note": "Statistical forecast (log-returns + volatility). Educational only.",
+        }
+
+        _cache_set(cache_key, payload, status=200)
+        response.headers["X-Cache"] = "MISS"
+        response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
+        return payload
+
+    except requests.RequestException as e:
         stale = _cache_get_stale(cache_key, stale_seconds=CACHE_STALE_SECONDS)
         if stale:
-            response.headers["X-Cache"] = "STALE-429"
+            response.headers["X-Cache"] = "STALE-EXCEPTION"
+            response.headers["X-Upstream-Status"] = "EXCEPTION"
             return stale["data"]
-        return JSONResponse(status_code=429, content={"error": "Upstream rate-limited (CoinGecko) for history. Try later."})
 
-    if r2.status_code != 200:
-        return JSONResponse(status_code=502, content={"error": "Failed to fetch history", "status": r2.status_code, "detail": (r2.text or "")[:300]})
-
-    ok2, chart_json = _safe_json(r2)
-    if not ok2 or not isinstance(chart_json, dict):
-        return JSONResponse(status_code=502, content={"error": "Invalid history JSON from upstream."})
-
-    prices = chart_json.get("prices") or []
-    closes = [float(p[1]) for p in prices if isinstance(p, list) and len(p) >= 2 and p[1] is not None]
-
-    if len(closes) < 10:
-        return JSONResponse(status_code=502, content={"error": "Not enough history data to predict."})
-
-    rsi = _rsi_14(closes)
-
-    predicted, lo68, hi68 = _forecast_next_price(closes, horizon_steps=1)
-
-    # soft RSI adjustment (±0.35%)
-    adj = 0.0
-    if rsi is not None:
-        if rsi < 35:
-            adj = +0.0035
-        elif rsi > 65:
-            adj = -0.0035
-
-    predicted_adj = predicted * (1.0 + adj)
-
-    payload = {
-        "coin_id": coin_id,
-        "timeframe": tf_norm,
-        "days_used": days_eff,
-        "interval": interval,
-        "last_price": float(last_price),
-        "predicted_price": float(predicted_adj),
-        "prediction_interval_68": {"low": float(lo68), "high": float(hi68)},
-        "indicators": {"rsi": rsi},
-        "model": "statistical-returns-v1",
-        "note": "Statistical forecast (log-returns + volatility). Educational only.",
-    }
-
-    _cache_set(cache_key, payload, status=200)
-    response.headers["X-Cache"] = "MISS"
-    return payload
+        return JSONResponse(status_code=503, content={"error": "AI upstream exception.", "detail": str(e)})
 
 
-# ------------------------------------------------------------
-# Backward compatibility: demo endpoint
-# ------------------------------------------------------------
+# ==========================================================
+# Backward compatibility: demo endpoint (rule-based)
+# ==========================================================
 @app.get("/demo/prediction")
 def demo_prediction(
     coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
@@ -511,7 +567,10 @@ def demo_prediction(
     if r1.status_code != 200:
         return {"error": "Failed to fetch price", "coin_id": coin_id, "status": r1.status_code, "body": r1.text}
 
-    price_json = r1.json()
+    ok, price_json = _safe_json(r1)
+    if not ok or not isinstance(price_json, dict):
+        return {"error": "Invalid JSON from upstream", "coin_id": coin_id}
+
     last_price = (price_json.get(coin_id) or {}).get("usd")
     if last_price is None:
         return {"error": "Unknown coin_id or missing price", "coin_id": coin_id, "raw": price_json}
@@ -521,7 +580,11 @@ def demo_prediction(
     if r2.status_code != 200:
         return {"error": "Failed to fetch history", "coin_id": coin_id, "status": r2.status_code, "body": r2.text}
 
-    prices = (r2.json().get("prices") or [])
+    ok2, chart_json = _safe_json(r2)
+    if not ok2 or not isinstance(chart_json, dict):
+        return {"error": "Invalid history JSON", "coin_id": coin_id}
+
+    prices = (chart_json.get("prices") or [])
     closes = [p[1] for p in prices if isinstance(p, list) and len(p) >= 2]
     rsi = _rsi_14([float(x) for x in closes if x is not None])
 
