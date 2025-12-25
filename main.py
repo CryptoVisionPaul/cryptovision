@@ -23,7 +23,7 @@ app = FastAPI(title="CryptoVision Backend")
 # ------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://cryptovisionpaul.github.io"]
     allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
