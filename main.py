@@ -18,9 +18,7 @@ from urllib3.util.retry import Retry
 app = FastAPI(title="CryptoVision Backend")
 
 # ==========================================================
-# CORS
-# - Pentru GitHub Pages: permite strict domeniul tău.
-# - IMPORTANT: allow_credentials=False => nu e nevoie de wildcard + credentials.
+# CORS (GitHub Pages origin)
 # ==========================================================
 ALLOWED_ORIGINS = [
     "https://cryptovisionpaul.github.io",
@@ -37,7 +35,7 @@ app.add_middleware(
 COINGECKO_BASE = "https://api.coingecko.com/api/v3"
 
 # ==========================================================
-# HTTP session + retries (stabilitate + pool)
+# HTTP session + retries
 # ==========================================================
 session = requests.Session()
 
@@ -61,16 +59,15 @@ session.headers.update(
 
 # ==========================================================
 # In-memory cache + throttle (anti-429)
-# Render free: cache se poate reseta la restart / redeploy.
 # ==========================================================
-CACHE_TTL_SECONDS = 60          # markets/predict "fresh" 60 sec
+CACHE_TTL_SECONDS = 60          # markets/predict fresh 60 sec
 CACHE_STALE_SECONDS = 15 * 60   # stale up to 15 min
 THROTTLE_SECONDS = 45           # min interval upstream hits per throttle key
 
-# Pentru CHART folosim TTL separat, mai lung (reduce rate-limit)
+# Chart has longer TTL to reduce upstream hits
 CHART_TTL_SECONDS = 5 * 60      # 5 min fresh
 CHART_STALE_SECONDS = 60 * 60   # 60 min stale fallback
-CHART_THROTTLE_SECONDS = 25     # chart poate fi apelat des din UI; îl protejăm mai agresiv
+CHART_THROTTLE_SECONDS = 25     # UI can click often; protect aggressively
 
 _cache: Dict[str, Dict[str, Any]] = {}
 
@@ -80,7 +77,6 @@ def _now() -> float:
 
 
 def _make_cache_key(path: str, params: Dict[str, Any]) -> str:
-    # cheie deterministă
     return f"{path}:{json.dumps(params, sort_keys=True, separators=(',', ':'))}"
 
 
@@ -89,9 +85,7 @@ def _cache_get_fresh(key: str, ttl_seconds: int) -> Optional[Dict[str, Any]]:
     if not obj:
         return None
     age = _now() - float(obj.get("ts", 0.0))
-    if age <= ttl_seconds:
-        return obj
-    return None
+    return obj if age <= ttl_seconds else None
 
 
 def _cache_get_stale(key: str, stale_seconds: int) -> Optional[Dict[str, Any]]:
@@ -99,9 +93,7 @@ def _cache_get_stale(key: str, stale_seconds: int) -> Optional[Dict[str, Any]]:
     if not obj:
         return None
     age = _now() - float(obj.get("ts", 0.0))
-    if age <= stale_seconds:
-        return obj
-    return None
+    return obj if age <= stale_seconds else None
 
 
 def _cache_set(key: str, data: Any, status: int = 200) -> None:
@@ -187,7 +179,6 @@ def coins_markets(
         response.headers["Cache-Control"] = f"public, max-age={CACHE_TTL_SECONDS}"
         return cached["data"]
 
-    # throttle => serve stale
     if not _can_hit_upstream(throttle_key, throttle_seconds=THROTTLE_SECONDS):
         stale_exact = _cache_get_stale(cache_key, stale_seconds=CACHE_STALE_SECONDS)
         if stale_exact:
@@ -199,6 +190,7 @@ def coins_markets(
             response.headers["X-Cache"] = "STALE-LAST-GOOD-THROTTLE"
             return stale_last["data"]
 
+        response.headers["Retry-After"] = "15"
         return JSONResponse(
             status_code=429,
             content={"error": "Throttled to protect upstream. No cached data yet."},
@@ -239,6 +231,8 @@ def coins_markets(
                     response.headers["Retry-After"] = ra
                 return stale_last["data"]
 
+            ra = r.headers.get("Retry-After") or "20"
+            response.headers["Retry-After"] = ra
             return JSONResponse(
                 status_code=429,
                 content={
@@ -268,20 +262,22 @@ def coins_markets(
 
 # ==========================================================
 # Proxy: /chart
-# UI: /chart?coin_id=bitcoin&vs_currency=usd&days=7&interval=hourly
-# IMPORTANT: UI chart should use backend to reduce 429 risk.
+# IMPORTANT:
+# - CoinGecko free: interval=hourly may be restricted.
+# - We ALWAYS coerce to interval=daily for reliability.
 # ==========================================================
 @app.get("/chart")
 def chart(
     response: Response,
     coin_id: str = Query(..., min_length=1, max_length=128, description="CoinGecko coin id, ex: bitcoin"),
     vs_currency: str = Query("usd", min_length=1, max_length=16),
-    days: int = Query(7, ge=1, le=90),
-    interval: str = Query("hourly", description="hourly | daily"),
+    days: int = Query(30, ge=1, le=365),
+    interval: str = Query("daily", description="hourly | daily (hourly will be coerced to daily)"),
 ):
-    interval_norm = interval.strip().lower()
-    if interval_norm not in ("hourly", "daily"):
-        return JSONResponse(status_code=422, content={"error": "Invalid interval. Use 'hourly' or 'daily'."})
+    # Always force daily to avoid plan restrictions.
+    interval_norm = "daily"
+    if interval.strip().lower() == "hourly":
+        response.headers["X-Interval-Coerced"] = "hourly->daily"
 
     url = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
     params = {"vs_currency": vs_currency, "days": days, "interval": interval_norm}
@@ -300,6 +296,7 @@ def chart(
         if stale:
             response.headers["X-Cache"] = "STALE-THROTTLE"
             return stale["data"]
+        response.headers["Retry-After"] = "15"
         return JSONResponse(status_code=429, content={"error": "Throttled chart request. No cached chart yet."})
 
     _mark_upstream_hit(throttle_key)
@@ -312,9 +309,7 @@ def chart(
             if not ok or not isinstance(data, dict) or "prices" not in data:
                 return JSONResponse(status_code=502, content={"error": "Invalid chart JSON from upstream."})
 
-            # Reduce payload size slightly (optional): keep only prices
             payload = {"prices": data.get("prices") or []}
-
             _cache_set(cache_key, payload, status=200)
 
             response.headers["X-Cache"] = "MISS"
@@ -331,6 +326,7 @@ def chart(
                     response.headers["Retry-After"] = ra
                 return stale["data"]
 
+            response.headers["Retry-After"] = r.headers.get("Retry-After") or "30"
             return JSONResponse(status_code=429, content={"error": "Upstream rate limited for chart. No cache yet."})
 
         return JSONResponse(
@@ -349,7 +345,10 @@ def chart(
 
 
 # ==========================================================
-# Indicators + statistical model (non-demo): /ai/predict
+# Indicators + statistical model: /ai/predict
+# IMPORTANT:
+# - We DO NOT use interval=hourly (plan restrictions).
+# - For 30m/1h/4h we forecast using daily returns with fractional horizon h.
 # ==========================================================
 def _rsi_14(series: List[float]) -> Optional[float]:
     if len(series) < 15:
@@ -385,27 +384,46 @@ def _stdev(xs: List[float]) -> float:
     return math.sqrt(max(0.0, var))
 
 
-def _timeframe_to_days(timeframe: str, days: int) -> Tuple[int, str]:
+def _timeframe_params(timeframe: str, days: int) -> Tuple[int, str, float]:
     """
-    CoinGecko market_chart supports interval=hourly/daily.
-    For small TF: use hourly and clamp days.
+    Return:
+      days_eff: days for market_chart
+      interval: ALWAYS 'daily' for reliability
+      h_days: forecast horizon expressed in "days" (fraction allowed)
     """
     tf = timeframe.strip().lower()
+
+    # Always daily interval (avoid restricted hourly)
+    interval = "daily"
+
+    # Horizon in days (fractional)
     if tf in ("30m", "30min", "30-min"):
-        return _clamp_int(days, 2, 30), "hourly"
+        h_days = 0.5 / 24.0
+        days_eff = _clamp_int(days, 30, 365)
+        return days_eff, interval, h_days
+
     if tf in ("1h", "60m", "1hour"):
-        return _clamp_int(days, 2, 60), "hourly"
+        h_days = 1.0 / 24.0
+        days_eff = _clamp_int(days, 30, 365)
+        return days_eff, interval, h_days
+
     if tf in ("4h", "240m", "4hour"):
-        return _clamp_int(days, 3, 90), "hourly"
-    return _clamp_int(days, 7, 365), "daily"
+        h_days = 4.0 / 24.0
+        days_eff = _clamp_int(days, 30, 365)
+        return days_eff, interval, h_days
+
+    # default 1d
+    h_days = 1.0
+    days_eff = _clamp_int(days, 30, 365)
+    return days_eff, interval, h_days
 
 
-def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[float, float, float]:
+def _forecast_next_price(closes: List[float], h_days: float = 1.0) -> Tuple[float, float, float]:
     """
-    Model on log-returns:
-      mu = mean(log-return), sigma = stdev(log-return)
-    Forecast: P_next = P_last * exp(mu*h)
-    Interval (68%): exp(±1*sigma*sqrt(h))
+    Model on DAILY log-returns.
+    Forecast for fractional horizon (in days):
+      pred = last * exp(mu * h)
+      interval(68%) uses sigma * sqrt(h)
     """
     if not closes:
         return 0.0, 0.0, 0.0
@@ -426,7 +444,8 @@ def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[f
 
     mu = _mean(rets)
     sigma = _stdev(rets)
-    h = max(1, int(horizon_steps))
+
+    h = max(1e-6, float(h_days))
     last = float(closes[-1])
 
     pred = last * math.exp(mu * h)
@@ -442,11 +461,11 @@ def _forecast_next_price(closes: List[float], horizon_steps: int = 1) -> Tuple[f
 def ai_predict(
     response: Response,
     coin_id: str = Query(..., min_length=1, max_length=128, description="CoinGecko coin id, ex: bitcoin"),
-    days: int = Query(90, ge=7, le=365, description="History window"),
+    days: int = Query(90, ge=30, le=365, description="History window"),
     timeframe: str = Query("1d", description="30m | 1h | 4h | 1d"),
 ):
     tf_norm = timeframe.strip().lower()
-    days_eff, interval = _timeframe_to_days(tf_norm, days)
+    days_eff, interval, h_days = _timeframe_params(tf_norm, days)
 
     params = {"coin_id": coin_id, "days": days_eff, "interval": interval, "tf": tf_norm}
     cache_key = _make_cache_key("/ai/predict", params)
@@ -463,6 +482,7 @@ def ai_predict(
         if stale:
             response.headers["X-Cache"] = "STALE-THROTTLE"
             return stale["data"]
+        response.headers["Retry-After"] = "15"
         return JSONResponse(status_code=429, content={"error": "Throttled AI endpoint. Please wait and retry."})
 
     _mark_upstream_hit(throttle_key)
@@ -485,7 +505,7 @@ def ai_predict(
         if last_price is None:
             return JSONResponse(status_code=404, content={"error": "Unknown coin_id or missing price", "coin_id": coin_id})
 
-        # 2) history
+        # 2) history (DAILY)
         url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
         r2 = session.get(url_chart, params={"vs_currency": "usd", "days": days_eff, "interval": interval}, timeout=25)
 
@@ -494,7 +514,11 @@ def ai_predict(
             if stale:
                 response.headers["X-Cache"] = "STALE-429"
                 response.headers["X-Upstream-Status"] = "429"
+                ra = r2.headers.get("Retry-After")
+                if ra:
+                    response.headers["Retry-After"] = ra
                 return stale["data"]
+            response.headers["Retry-After"] = r2.headers.get("Retry-After") or "30"
             return JSONResponse(status_code=429, content={"error": "Upstream rate-limited (CoinGecko) for history. Try later."})
 
         if r2.status_code != 200:
@@ -510,11 +534,11 @@ def ai_predict(
         prices = chart_json.get("prices") or []
         closes = [float(p[1]) for p in prices if isinstance(p, list) and len(p) >= 2 and p[1] is not None]
 
-        if len(closes) < 10:
+        if len(closes) < 15:
             return JSONResponse(status_code=502, content={"error": "Not enough history data to predict."})
 
         rsi = _rsi_14(closes)
-        predicted, lo68, hi68 = _forecast_next_price(closes, horizon_steps=1)
+        predicted, lo68, hi68 = _forecast_next_price(closes, h_days=h_days)
 
         # soft RSI adjustment (±0.35%)
         adj = 0.0
@@ -530,13 +554,14 @@ def ai_predict(
             "coin_id": coin_id,
             "timeframe": tf_norm,
             "days_used": days_eff,
-            "interval": interval,
+            "interval": interval,  # always daily
+            "horizon_days": h_days,
             "last_price": float(last_price),
             "predicted_price": float(predicted_adj),
             "prediction_interval_68": {"low": float(lo68), "high": float(hi68)},
             "indicators": {"rsi": rsi},
             "model": "statistical-returns-v1",
-            "note": "Statistical forecast (log-returns + volatility). Educational only.",
+            "note": "Statistical forecast (daily log-returns + volatility). Educational only.",
         }
 
         _cache_set(cache_key, payload, status=200)
@@ -560,7 +585,7 @@ def ai_predict(
 @app.get("/demo/prediction")
 def demo_prediction(
     coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
-    days: int = Query(90, ge=7, le=365, description="History window"),
+    days: int = Query(90, ge=30, le=365, description="History window"),
 ):
     url_price = f"{COINGECKO_BASE}/simple/price"
     r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
