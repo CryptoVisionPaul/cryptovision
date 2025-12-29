@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import math
 import time
+import threading
 from typing import Any, Dict, List, Optional, Tuple
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
+import xml.etree.ElementTree as ET
 
 import requests
 from fastapi import FastAPI, Query, Response
@@ -43,33 +47,40 @@ retry = Retry(
     total=2,
     backoff_factor=0.7,
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=frozenset(["GET"]),
+    allowed_methods=["GET"],
     raise_on_status=False,
-    respect_retry_after_header=True,
 )
 
-adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
+adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
 session.headers.update(
     {
-        "Accept": "application/json",
-        "User-Agent": "CryptoVision/1.1 (Render; GitHub Pages frontend)",
+        "Accept": "application/json, text/xml, application/xml;q=0.9, */*;q=0.8",
+        "User-Agent": "CryptoVision/1.0 (Render; GitHub Pages frontend)",
     }
 )
 
 # ==========================================================
 # In-memory cache + throttle (anti-429)
 # ==========================================================
-CACHE_TTL_SECONDS = 60          # markets/predict fresh 60 sec
-CACHE_STALE_SECONDS = 15 * 60   # stale up to 15 min
-THROTTLE_SECONDS = 45           # min interval upstream hits per throttle key
+CACHE_TTL_SECONDS = 60
+CACHE_STALE_SECONDS = 15 * 60
+THROTTLE_SECONDS = 45
 
-CHART_TTL_SECONDS = 5 * 60      # 5 min fresh
-CHART_STALE_SECONDS = 60 * 60   # 60 min stale fallback
-CHART_THROTTLE_SECONDS = 25     # protect aggressively
+CHART_TTL_SECONDS = 5 * 60
+CHART_STALE_SECONDS = 60 * 60
+CHART_THROTTLE_SECONDS = 25
+
+NEWS_TTL_SECONDS = 5 * 60
+NEWS_STALE_SECONDS = 60 * 60
+NEWS_THROTTLE_SECONDS = 20
+
+# protect memory (simple eviction)
+CACHE_MAX_KEYS = 700
 
 _cache: Dict[str, Dict[str, Any]] = {}
+_cache_lock = threading.Lock()
 
 
 def _now() -> float:
@@ -80,46 +91,68 @@ def _make_cache_key(path: str, params: Dict[str, Any]) -> str:
     return f"{path}:{json.dumps(params, sort_keys=True, separators=(',', ':'))}"
 
 
+def _evict_if_needed() -> None:
+    # simple eviction: remove oldest entries if cache too big
+    with _cache_lock:
+        if len(_cache) <= CACHE_MAX_KEYS:
+            return
+        items = []
+        for k, v in _cache.items():
+            ts = float(v.get("ts", 0.0) or 0.0)
+            items.append((ts, k))
+        items.sort(key=lambda x: x[0])  # oldest first
+        to_remove = max(0, len(_cache) - CACHE_MAX_KEYS)
+        for i in range(to_remove):
+            _, k = items[i]
+            _cache.pop(k, None)
+
+
 def _cache_get_fresh(key: str, ttl_seconds: int) -> Optional[Dict[str, Any]]:
-    obj = _cache.get(key)
-    if not obj:
-        return None
-    age = _now() - float(obj.get("ts", 0.0))
-    return obj if age <= ttl_seconds else None
+    with _cache_lock:
+        obj = _cache.get(key)
+        if not obj:
+            return None
+        age = _now() - float(obj.get("ts", 0.0))
+        return obj if age <= ttl_seconds else None
 
 
 def _cache_get_stale(key: str, stale_seconds: int) -> Optional[Dict[str, Any]]:
-    obj = _cache.get(key)
-    if not obj:
-        return None
-    age = _now() - float(obj.get("ts", 0.0))
-    return obj if age <= stale_seconds else None
+    with _cache_lock:
+        obj = _cache.get(key)
+        if not obj:
+            return None
+        age = _now() - float(obj.get("ts", 0.0))
+        return obj if age <= stale_seconds else None
 
 
 def _cache_set(key: str, data: Any, status: int = 200) -> None:
-    prev = _cache.get(key, {})
-    _cache[key] = {
-        "ts": _now(),
-        "data": data,
-        "status": status,
-        "last_upstream_ts": float(prev.get("last_upstream_ts", 0.0)),
-    }
+    with _cache_lock:
+        prev = _cache.get(key, {})
+        _cache[key] = {
+            "ts": _now(),
+            "data": data,
+            "status": status,
+            "last_upstream_ts": float(prev.get("last_upstream_ts", 0.0)),
+        }
+    _evict_if_needed()
 
 
 def _can_hit_upstream(throttle_key: str, throttle_seconds: int) -> bool:
-    obj = _cache.get(throttle_key)
-    if not obj:
-        return True
-    last = float(obj.get("last_upstream_ts", 0.0) or 0.0)
-    return (_now() - last) >= throttle_seconds
+    with _cache_lock:
+        obj = _cache.get(throttle_key)
+        if not obj:
+            return True
+        last = float(obj.get("last_upstream_ts", 0.0) or 0.0)
+        return (_now() - last) >= throttle_seconds
 
 
 def _mark_upstream_hit(throttle_key: str) -> None:
-    obj = _cache.get(throttle_key)
-    if not obj:
-        _cache[throttle_key] = {"ts": 0.0, "data": None, "status": 0, "last_upstream_ts": _now()}
-    else:
-        obj["last_upstream_ts"] = _now()
+    with _cache_lock:
+        obj = _cache.get(throttle_key)
+        if not obj:
+            _cache[throttle_key] = {"ts": 0.0, "data": None, "status": 0, "last_upstream_ts": _now()}
+        else:
+            obj["last_upstream_ts"] = _now()
 
 
 def _safe_json(resp: requests.Response) -> Tuple[bool, Any]:
@@ -133,6 +166,38 @@ def _clamp_int(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
 
 
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _to_iso_datetime(s: str) -> Optional[str]:
+    if not s:
+        return None
+    s = s.strip()
+    # RSS pubDate
+    try:
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:
+        pass
+    # Atom updated/published often ISO already
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+def _text(el: Optional[ET.Element]) -> str:
+    if el is None or el.text is None:
+        return ""
+    return el.text.strip()
+
+
 # ==========================================================
 # Routes
 # ==========================================================
@@ -143,7 +208,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "ts": _iso_now()}
 
 
 # ==========================================================
@@ -235,19 +300,12 @@ def coins_markets(
             response.headers["Retry-After"] = ra
             return JSONResponse(
                 status_code=429,
-                content={
-                    "error": "Upstream rate limited (CoinGecko). No cached data yet.",
-                    "detail": (r.text or "")[:500],
-                },
+                content={"error": "Upstream rate limited (CoinGecko). No cached data yet.", "detail": (r.text or "")[:500]},
             )
 
         return JSONResponse(
             status_code=502,
-            content={
-                "error": "Upstream request failed (CoinGecko).",
-                "status_code": r.status_code,
-                "detail": (r.text or "")[:500],
-            },
+            content={"error": "Upstream request failed (CoinGecko).", "status_code": r.status_code, "detail": (r.text or "")[:500]},
         )
 
     except requests.RequestException as e:
@@ -261,16 +319,15 @@ def coins_markets(
 
 
 # ==========================================================
-# Proxy: /chart
-# Always coerce interval to daily for reliability
+# Proxy: /chart (forced daily)
 # ==========================================================
 @app.get("/chart")
 def chart(
     response: Response,
-    coin_id: str = Query(..., min_length=1, max_length=128, description="CoinGecko coin id, ex: bitcoin"),
+    coin_id: str = Query(..., min_length=1, max_length=128),
     vs_currency: str = Query("usd", min_length=1, max_length=16),
     days: int = Query(30, ge=1, le=365),
-    interval: str = Query("daily", description="hourly | daily (hourly will be coerced to daily)"),
+    interval: str = Query("daily"),
 ):
     interval_norm = "daily"
     if interval.strip().lower() == "hourly":
@@ -326,10 +383,7 @@ def chart(
             response.headers["Retry-After"] = r.headers.get("Retry-After") or "30"
             return JSONResponse(status_code=429, content={"error": "Upstream rate limited for chart. No cache yet."})
 
-        return JSONResponse(
-            status_code=502,
-            content={"error": "Upstream chart failed.", "status_code": r.status_code, "detail": (r.text or "")[:500]},
-        )
+        return JSONResponse(status_code=502, content={"error": "Upstream chart failed.", "status_code": r.status_code, "detail": (r.text or "")[:500]})
 
     except requests.RequestException as e:
         stale = _cache_get_stale(cache_key, stale_seconds=CHART_STALE_SECONDS)
@@ -343,9 +397,6 @@ def chart(
 
 # ==========================================================
 # Indicators + statistical model: /ai/predict
-# - Uses DAILY market_chart always
-# - Forecast horizon expressed in days (fraction allowed)
-# - Includes volatility floor so intervals are not unrealistically tight
 # ==========================================================
 def _rsi_14(series: List[float]) -> Optional[float]:
     if len(series) < 15:
@@ -384,53 +435,28 @@ def _stdev(xs: List[float]) -> float:
 def _timeframe_params(timeframe: str, days: int) -> Tuple[int, str, float]:
     tf = timeframe.strip().lower()
     interval = "daily"
+
     if tf in ("30m", "30min", "30-min"):
-        return _clamp_int(days, 30, 365), interval, 0.5 / 24.0
+        h_days = 0.5 / 24.0
+        return _clamp_int(days, 30, 365), interval, h_days
+
     if tf in ("1h", "60m", "1hour"):
-        return _clamp_int(days, 30, 365), interval, 1.0 / 24.0
+        h_days = 1.0 / 24.0
+        return _clamp_int(days, 30, 365), interval, h_days
+
     if tf in ("4h", "240m", "4hour"):
-        return _clamp_int(days, 30, 365), interval, 4.0 / 24.0
+        h_days = 4.0 / 24.0
+        return _clamp_int(days, 30, 365), interval, h_days
+
     return _clamp_int(days, 30, 365), interval, 1.0
 
 
-def _sigma_floor_for_horizon(h_days: float, min_move_rel: float = 0.005) -> float:
-    """
-    Ensures that for the given horizon h (in days), the 1-sigma band is not absurdly tight.
-    For log-returns, a move of 'min_move_rel' corresponds roughly to log(1+min_move_rel).
-
-    Want: sigma * sqrt(h) >= log(1+min_move_rel)
-    => sigma >= log(1+min_move_rel) / sqrt(h)
-    """
-    h = max(1e-6, float(h_days))
-    target = math.log(1.0 + float(min_move_rel))
-    return target / math.sqrt(h)
-
-
-def _forecast_next_price(
-    closes: List[float],
-    h_days: float = 1.0,
-    rsi: Optional[float] = None,
-) -> Tuple[float, float, float, Dict[str, float]]:
-    """
-    Model on DAILY log-returns.
-
-    Correct formulas:
-      pred = last * exp(mu*h)
-      lo/hi (68%) = last * exp(mu*h ± sigma*sqrt(h))
-
-    Adds:
-      - volatility floor so intervals aren't unrealistically tight
-      - RSI adjustment applied as a small drift tweak (log-space)
-
-    Returns:
-      pred, lo68, hi68, diagnostics
-    """
+def _forecast_next_price(closes: List[float], h_days: float = 1.0) -> Tuple[float, float, float]:
     if not closes:
-        return 0.0, 0.0, 0.0, {"mu": 0.0, "sigma": 0.0, "sigma_floor": 0.0}
-
-    last = float(closes[-1])
-    if len(closes) < 3 or last <= 0:
-        return last, last, last, {"mu": 0.0, "sigma": 0.0, "sigma_floor": 0.0}
+        return 0.0, 0.0, 0.0
+    if len(closes) < 3:
+        last = float(closes[-1])
+        return last, last, last
 
     rets: List[float] = []
     for i in range(1, len(closes)):
@@ -440,65 +466,37 @@ def _forecast_next_price(
             rets.append(math.log(p1 / p0))
 
     if len(rets) < 2:
-        return last, last, last, {"mu": 0.0, "sigma": 0.0, "sigma_floor": 0.0}
+        last = float(closes[-1])
+        return last, last, last
 
     mu = _mean(rets)
     sigma = _stdev(rets)
 
     h = max(1e-6, float(h_days))
+    last = float(closes[-1])
 
-    # RSI drift adjustment (small, bounded)
-    # Interpret as small relative move; convert to log drift approximately.
-    # +/- 0.35% as in your code, but applied consistently in log space.
-    rsi_adj_rel = 0.0
-    if rsi is not None:
-        if rsi < 35:
-            rsi_adj_rel = +0.0035
-        elif rsi > 65:
-            rsi_adj_rel = -0.0035
+    pred = last * math.exp(mu * h)
 
-    # Convert to log drift. For small x, log(1+x) ≈ x.
-    mu_adj = mu + math.log(1.0 + rsi_adj_rel) / max(h, 1e-6)
+    spread = sigma * math.sqrt(h)
+    lo = last * math.exp((mu - spread) * h)
+    hi = last * math.exp((mu + spread) * h)
 
-    # Volatility floor to avoid "from == to" situations in UI
-    sigma_floor = _sigma_floor_for_horizon(h, min_move_rel=0.005)
-    sigma_eff = max(sigma, sigma_floor)
-
-    # Predicted (center)
-    pred = last * math.exp(mu_adj * h)
-
-    # 68% band around center with correct sqrt(h)
-    band = sigma_eff * math.sqrt(h)
-    lo = last * math.exp(mu_adj * h - band)
-    hi = last * math.exp(mu_adj * h + band)
-
-    # Sanity
-    lo = min(lo, hi)
-    hi = max(lo, hi)
-
-    return float(pred), float(lo), float(hi), {
-        "mu": float(mu),
-        "mu_adj": float(mu_adj),
-        "sigma": float(sigma),
-        "sigma_eff": float(sigma_eff),
-        "sigma_floor": float(sigma_floor),
-        "band": float(band),
-    }
+    return float(pred), float(lo), float(hi)
 
 
 @app.get("/ai/predict")
 def ai_predict(
     response: Response,
-    coin_id: str = Query(..., min_length=1, max_length=128, description="CoinGecko coin id, ex: bitcoin"),
-    days: int = Query(90, ge=30, le=365, description="History window"),
-    timeframe: str = Query("1d", description="30m | 1h | 4h | 1d"),
+    coin_id: str = Query(..., min_length=1, max_length=128),
+    days: int = Query(90, ge=30, le=365),
+    timeframe: str = Query("1d"),
 ):
     tf_norm = timeframe.strip().lower()
     days_eff, interval, h_days = _timeframe_params(tf_norm, days)
 
     params = {"coin_id": coin_id, "days": days_eff, "interval": interval, "tf": tf_norm}
     cache_key = _make_cache_key("/ai/predict", params)
-    throttle_key = f"THROTTLE:/ai/predict:{coin_id}:{tf_norm}:{days_eff}"
+    throttle_key = f"THROTTLE:/ai/predict:{coin_id}:{tf_norm}"
 
     cached = _cache_get_fresh(cache_key, ttl_seconds=CACHE_TTL_SECONDS)
     if cached:
@@ -521,10 +519,7 @@ def ai_predict(
         url_price = f"{COINGECKO_BASE}/simple/price"
         r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
         if r1.status_code != 200:
-            return JSONResponse(
-                status_code=502,
-                content={"error": "Failed to fetch price", "status": r1.status_code, "detail": (r1.text or "")[:300]},
-            )
+            return JSONResponse(status_code=502, content={"error": "Failed to fetch price", "status": r1.status_code, "detail": (r1.text or "")[:300]})
 
         ok1, price_json = _safe_json(r1)
         if not ok1 or not isinstance(price_json, dict):
@@ -534,7 +529,7 @@ def ai_predict(
         if last_price is None:
             return JSONResponse(status_code=404, content={"error": "Unknown coin_id or missing price", "coin_id": coin_id})
 
-        # 2) history (DAILY)
+        # 2) history
         url_chart = f"{COINGECKO_BASE}/coins/{coin_id}/market_chart"
         r2 = session.get(url_chart, params={"vs_currency": "usd", "days": days_eff, "interval": interval}, timeout=25)
 
@@ -551,10 +546,7 @@ def ai_predict(
             return JSONResponse(status_code=429, content={"error": "Upstream rate-limited (CoinGecko) for history. Try later."})
 
         if r2.status_code != 200:
-            return JSONResponse(
-                status_code=502,
-                content={"error": "Failed to fetch history", "status": r2.status_code, "detail": (r2.text or "")[:300]},
-            )
+            return JSONResponse(status_code=502, content={"error": "Failed to fetch history", "status": r2.status_code, "detail": (r2.text or "")[:300]})
 
         ok2, chart_json = _safe_json(r2)
         if not ok2 or not isinstance(chart_json, dict):
@@ -567,22 +559,30 @@ def ai_predict(
             return JSONResponse(status_code=502, content={"error": "Not enough history data to predict."})
 
         rsi = _rsi_14(closes)
+        predicted, lo68, hi68 = _forecast_next_price(closes, h_days=h_days)
 
-        predicted, lo68, hi68, diag = _forecast_next_price(closes, h_days=h_days, rsi=rsi)
+        # soft RSI adjustment (±0.35%)
+        adj = 0.0
+        if rsi is not None:
+            if rsi < 35:
+                adj = +0.0035
+            elif rsi > 65:
+                adj = -0.0035
+
+        predicted_adj = predicted * (1.0 + adj)
 
         payload = {
             "coin_id": coin_id,
             "timeframe": tf_norm,
             "days_used": days_eff,
-            "interval": interval,  # always daily
-            "horizon_days": float(h_days),
+            "interval": interval,
+            "horizon_days": h_days,
             "last_price": float(last_price),
-            "predicted_price": float(predicted),
+            "predicted_price": float(predicted_adj),
             "prediction_interval_68": {"low": float(lo68), "high": float(hi68)},
             "indicators": {"rsi": rsi},
-            "model": "statistical-returns-v2",
-            "diagnostics": diag,
-            "note": "Statistical forecast (daily log-returns + volatility floor). Educational only.",
+            "model": "statistical-returns-v1",
+            "note": "Statistical forecast (daily log-returns + volatility). Educational only.",
         }
 
         _cache_set(cache_key, payload, status=200)
@@ -601,12 +601,161 @@ def ai_predict(
 
 
 # ==========================================================
-# Backward compatibility: demo endpoint (rule-based)
+# NEWS: RSS/Atom aggregator: /news
+# ==========================================================
+NEWS_FEEDS = [
+    {"source": "CoinDesk", "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+    {"source": "Cointelegraph", "url": "https://cointelegraph.com/rss"},
+    {"source": "Bitcoin Magazine", "url": "https://bitcoinmagazine.com/.rss/full/"},
+]
+
+_BULL = {"surge", "rally", "breakout", "approval", "adopt", "adoption", "bull", "up", "soar", "launch", "record high"}
+_BEAR = {"hack", "exploit", "lawsuit", "ban", "crash", "bear", "down", "plunge", "liquidation", "fraud", "charged", "bankrupt", "SEC"}
+
+
+def _impact_from_text(title: str) -> str:
+    t = (title or "").lower()
+    score = 0
+    for w in _BULL:
+        if w in t:
+            score += 1
+    for w in _BEAR:
+        if w in t:
+            score -= 1
+    if score >= 1:
+        return "bullish"
+    if score <= -1:
+        return "bearish"
+    return "neutral"
+
+
+def _parse_rss_or_atom(xml_text: str, source: str, max_items: int) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    root = ET.fromstring(xml_text)
+
+    # RSS
+    channel = root.find("channel")
+    if channel is None:
+        # Some feeds are rss/channel
+        channel = root.find("./channel")
+
+    if channel is not None:
+        for it in channel.findall("item")[:max_items]:
+            title = _text(it.find("title"))
+            link = _text(it.find("link"))
+            pub = _text(it.find("pubDate"))
+            desc = _text(it.find("description"))
+            pub_iso = _to_iso_datetime(pub) or None
+            items.append(
+                {
+                    "source": source,
+                    "title": title or "(no title)",
+                    "url": link,
+                    "published_at": pub_iso,
+                    "summary": (desc[:240] if desc else None),
+                    "impact": _impact_from_text(title),
+                }
+            )
+        return items
+
+    # Atom
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    for entry in root.findall("a:entry", ns)[:max_items]:
+        title = _text(entry.find("a:title", ns))
+        updated = _text(entry.find("a:updated", ns)) or _text(entry.find("a:published", ns))
+        pub_iso = _to_iso_datetime(updated) or None
+
+        link_el = entry.find("a:link", ns)
+        link = ""
+        if link_el is not None:
+            link = link_el.attrib.get("href", "") or ""
+
+        summary = _text(entry.find("a:summary", ns)) or _text(entry.find("a:content", ns))
+        items.append(
+            {
+                "source": source,
+                "title": title or "(no title)",
+                "url": link,
+                "published_at": pub_iso,
+                "summary": (summary[:240] if summary else None),
+                "impact": _impact_from_text(title),
+            }
+        )
+    return items
+
+
+@app.get("/news")
+def news(
+    response: Response,
+    limit: int = Query(20, ge=5, le=50, description="Total items returned (all feeds combined)"),
+):
+    params = {"limit": limit}
+    cache_key = _make_cache_key("/news", params)
+    throttle_key = "THROTTLE:/news"
+
+    cached = _cache_get_fresh(cache_key, ttl_seconds=NEWS_TTL_SECONDS)
+    if cached:
+        response.headers["X-Cache"] = "HIT"
+        response.headers["Cache-Control"] = f"public, max-age={NEWS_TTL_SECONDS}"
+        return cached["data"]
+
+    if not _can_hit_upstream(throttle_key, throttle_seconds=NEWS_THROTTLE_SECONDS):
+        stale = _cache_get_stale(cache_key, stale_seconds=NEWS_STALE_SECONDS)
+        if stale:
+            response.headers["X-Cache"] = "STALE-THROTTLE"
+            return stale["data"]
+        response.headers["Retry-After"] = "15"
+        return JSONResponse(status_code=429, content={"error": "Throttled news endpoint. Retry shortly."})
+
+    _mark_upstream_hit(throttle_key)
+
+    combined: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+
+    per_feed = max(3, min(20, int(math.ceil(limit / max(1, len(NEWS_FEEDS))) + 3)))
+
+    for f in NEWS_FEEDS:
+        try:
+            r = session.get(f["url"], timeout=20)
+            if r.status_code != 200:
+                errors.append({"source": f["source"], "status": r.status_code})
+                continue
+            # RSS is XML
+            xml_text = r.text or ""
+            feed_items = _parse_rss_or_atom(xml_text, f["source"], max_items=per_feed)
+            combined.extend(feed_items)
+        except Exception:
+            errors.append({"source": f["source"], "status": "error"})
+            continue
+
+    # sort by published_at desc; unknown dates go last
+    def _sort_key(it: Dict[str, Any]) -> str:
+        return it.get("published_at") or "0000-01-01T00:00:00+00:00"
+
+    combined.sort(key=_sort_key, reverse=True)
+    combined = combined[:limit]
+
+    payload = {
+        "items": combined,
+        "feeds": [f["source"] for f in NEWS_FEEDS],
+        "generated_at": _iso_now(),
+        "errors": errors if errors else None,
+        "note": "News are aggregated from RSS feeds (educational/informational).",
+    }
+
+    _cache_set(cache_key, payload, status=200)
+    response.headers["X-Cache"] = "MISS"
+    response.headers["Cache-Control"] = f"public, max-age={NEWS_TTL_SECONDS}"
+    return payload
+
+
+# ==========================================================
+# Backward compatibility: demo endpoint
 # ==========================================================
 @app.get("/demo/prediction")
 def demo_prediction(
-    coin_id: str = Query(..., description="CoinGecko coin id, ex: bitcoin"),
-    days: int = Query(90, ge=30, le=365, description="History window"),
+    coin_id: str = Query(...),
+    days: int = Query(90, ge=30, le=365),
 ):
     url_price = f"{COINGECKO_BASE}/simple/price"
     r1 = session.get(url_price, params={"ids": coin_id, "vs_currencies": "usd"}, timeout=20)
