@@ -43,8 +43,9 @@ retry = Retry(
     total=2,
     backoff_factor=0.7,
     status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"],
+    allowed_methods=frozenset(["GET"]),
     raise_on_status=False,
+    respect_retry_after_header=True,
 )
 
 adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
@@ -53,7 +54,7 @@ session.mount("http://", adapter)
 session.headers.update(
     {
         "Accept": "application/json",
-        "User-Agent": "CryptoVision/1.0 (Render; GitHub Pages frontend)",
+        "User-Agent": "CryptoVision/1.1 (Render; GitHub Pages frontend)",
     }
 )
 
@@ -64,10 +65,9 @@ CACHE_TTL_SECONDS = 60          # markets/predict fresh 60 sec
 CACHE_STALE_SECONDS = 15 * 60   # stale up to 15 min
 THROTTLE_SECONDS = 45           # min interval upstream hits per throttle key
 
-# Chart has longer TTL to reduce upstream hits
 CHART_TTL_SECONDS = 5 * 60      # 5 min fresh
 CHART_STALE_SECONDS = 60 * 60   # 60 min stale fallback
-CHART_THROTTLE_SECONDS = 25     # UI can click often; protect aggressively
+CHART_THROTTLE_SECONDS = 25     # protect aggressively
 
 _cache: Dict[str, Dict[str, Any]] = {}
 
@@ -262,9 +262,7 @@ def coins_markets(
 
 # ==========================================================
 # Proxy: /chart
-# IMPORTANT:
-# - CoinGecko free: interval=hourly may be restricted.
-# - We ALWAYS coerce to interval=daily for reliability.
+# Always coerce interval to daily for reliability
 # ==========================================================
 @app.get("/chart")
 def chart(
@@ -274,7 +272,6 @@ def chart(
     days: int = Query(30, ge=1, le=365),
     interval: str = Query("daily", description="hourly | daily (hourly will be coerced to daily)"),
 ):
-    # Always force daily to avoid plan restrictions.
     interval_norm = "daily"
     if interval.strip().lower() == "hourly":
         response.headers["X-Interval-Coerced"] = "hourly->daily"
@@ -346,9 +343,9 @@ def chart(
 
 # ==========================================================
 # Indicators + statistical model: /ai/predict
-# IMPORTANT:
-# - We DO NOT use interval=hourly (plan restrictions).
-# - For 30m/1h/4h we forecast using daily returns with fractional horizon h.
+# - Uses DAILY market_chart always
+# - Forecast horizon expressed in days (fraction allowed)
+# - Includes volatility floor so intervals are not unrealistically tight
 # ==========================================================
 def _rsi_14(series: List[float]) -> Optional[float]:
     if len(series) < 15:
@@ -385,51 +382,55 @@ def _stdev(xs: List[float]) -> float:
 
 
 def _timeframe_params(timeframe: str, days: int) -> Tuple[int, str, float]:
-    """
-    Return:
-      days_eff: days for market_chart
-      interval: ALWAYS 'daily' for reliability
-      h_days: forecast horizon expressed in "days" (fraction allowed)
-    """
     tf = timeframe.strip().lower()
-
-    # Always daily interval (avoid restricted hourly)
     interval = "daily"
-
-    # Horizon in days (fractional)
     if tf in ("30m", "30min", "30-min"):
-        h_days = 0.5 / 24.0
-        days_eff = _clamp_int(days, 30, 365)
-        return days_eff, interval, h_days
-
+        return _clamp_int(days, 30, 365), interval, 0.5 / 24.0
     if tf in ("1h", "60m", "1hour"):
-        h_days = 1.0 / 24.0
-        days_eff = _clamp_int(days, 30, 365)
-        return days_eff, interval, h_days
-
+        return _clamp_int(days, 30, 365), interval, 1.0 / 24.0
     if tf in ("4h", "240m", "4hour"):
-        h_days = 4.0 / 24.0
-        days_eff = _clamp_int(days, 30, 365)
-        return days_eff, interval, h_days
-
-    # default 1d
-    h_days = 1.0
-    days_eff = _clamp_int(days, 30, 365)
-    return days_eff, interval, h_days
+        return _clamp_int(days, 30, 365), interval, 4.0 / 24.0
+    return _clamp_int(days, 30, 365), interval, 1.0
 
 
-def _forecast_next_price(closes: List[float], h_days: float = 1.0) -> Tuple[float, float, float]:
+def _sigma_floor_for_horizon(h_days: float, min_move_rel: float = 0.005) -> float:
+    """
+    Ensures that for the given horizon h (in days), the 1-sigma band is not absurdly tight.
+    For log-returns, a move of 'min_move_rel' corresponds roughly to log(1+min_move_rel).
+
+    Want: sigma * sqrt(h) >= log(1+min_move_rel)
+    => sigma >= log(1+min_move_rel) / sqrt(h)
+    """
+    h = max(1e-6, float(h_days))
+    target = math.log(1.0 + float(min_move_rel))
+    return target / math.sqrt(h)
+
+
+def _forecast_next_price(
+    closes: List[float],
+    h_days: float = 1.0,
+    rsi: Optional[float] = None,
+) -> Tuple[float, float, float, Dict[str, float]]:
     """
     Model on DAILY log-returns.
-    Forecast for fractional horizon (in days):
-      pred = last * exp(mu * h)
-      interval(68%) uses sigma * sqrt(h)
+
+    Correct formulas:
+      pred = last * exp(mu*h)
+      lo/hi (68%) = last * exp(mu*h ± sigma*sqrt(h))
+
+    Adds:
+      - volatility floor so intervals aren't unrealistically tight
+      - RSI adjustment applied as a small drift tweak (log-space)
+
+    Returns:
+      pred, lo68, hi68, diagnostics
     """
     if not closes:
-        return 0.0, 0.0, 0.0
-    if len(closes) < 3:
-        last = float(closes[-1])
-        return last, last, last
+        return 0.0, 0.0, 0.0, {"mu": 0.0, "sigma": 0.0, "sigma_floor": 0.0}
+
+    last = float(closes[-1])
+    if len(closes) < 3 or last <= 0:
+        return last, last, last, {"mu": 0.0, "sigma": 0.0, "sigma_floor": 0.0}
 
     rets: List[float] = []
     for i in range(1, len(closes)):
@@ -439,22 +440,50 @@ def _forecast_next_price(closes: List[float], h_days: float = 1.0) -> Tuple[floa
             rets.append(math.log(p1 / p0))
 
     if len(rets) < 2:
-        last = float(closes[-1])
-        return last, last, last
+        return last, last, last, {"mu": 0.0, "sigma": 0.0, "sigma_floor": 0.0}
 
     mu = _mean(rets)
     sigma = _stdev(rets)
 
     h = max(1e-6, float(h_days))
-    last = float(closes[-1])
 
-    pred = last * math.exp(mu * h)
+    # RSI drift adjustment (small, bounded)
+    # Interpret as small relative move; convert to log drift approximately.
+    # +/- 0.35% as in your code, but applied consistently in log space.
+    rsi_adj_rel = 0.0
+    if rsi is not None:
+        if rsi < 35:
+            rsi_adj_rel = +0.0035
+        elif rsi > 65:
+            rsi_adj_rel = -0.0035
 
-    spread = sigma * math.sqrt(h)
-    lo = last * math.exp((mu - spread) * h)
-    hi = last * math.exp((mu + spread) * h)
+    # Convert to log drift. For small x, log(1+x) ≈ x.
+    mu_adj = mu + math.log(1.0 + rsi_adj_rel) / max(h, 1e-6)
 
-    return float(pred), float(lo), float(hi)
+    # Volatility floor to avoid "from == to" situations in UI
+    sigma_floor = _sigma_floor_for_horizon(h, min_move_rel=0.005)
+    sigma_eff = max(sigma, sigma_floor)
+
+    # Predicted (center)
+    pred = last * math.exp(mu_adj * h)
+
+    # 68% band around center with correct sqrt(h)
+    band = sigma_eff * math.sqrt(h)
+    lo = last * math.exp(mu_adj * h - band)
+    hi = last * math.exp(mu_adj * h + band)
+
+    # Sanity
+    lo = min(lo, hi)
+    hi = max(lo, hi)
+
+    return float(pred), float(lo), float(hi), {
+        "mu": float(mu),
+        "mu_adj": float(mu_adj),
+        "sigma": float(sigma),
+        "sigma_eff": float(sigma_eff),
+        "sigma_floor": float(sigma_floor),
+        "band": float(band),
+    }
 
 
 @app.get("/ai/predict")
@@ -469,7 +498,7 @@ def ai_predict(
 
     params = {"coin_id": coin_id, "days": days_eff, "interval": interval, "tf": tf_norm}
     cache_key = _make_cache_key("/ai/predict", params)
-    throttle_key = f"THROTTLE:/ai/predict:{coin_id}:{tf_norm}"
+    throttle_key = f"THROTTLE:/ai/predict:{coin_id}:{tf_norm}:{days_eff}"
 
     cached = _cache_get_fresh(cache_key, ttl_seconds=CACHE_TTL_SECONDS)
     if cached:
@@ -538,30 +567,22 @@ def ai_predict(
             return JSONResponse(status_code=502, content={"error": "Not enough history data to predict."})
 
         rsi = _rsi_14(closes)
-        predicted, lo68, hi68 = _forecast_next_price(closes, h_days=h_days)
 
-        # soft RSI adjustment (±0.35%)
-        adj = 0.0
-        if rsi is not None:
-            if rsi < 35:
-                adj = +0.0035
-            elif rsi > 65:
-                adj = -0.0035
-
-        predicted_adj = predicted * (1.0 + adj)
+        predicted, lo68, hi68, diag = _forecast_next_price(closes, h_days=h_days, rsi=rsi)
 
         payload = {
             "coin_id": coin_id,
             "timeframe": tf_norm,
             "days_used": days_eff,
             "interval": interval,  # always daily
-            "horizon_days": h_days,
+            "horizon_days": float(h_days),
             "last_price": float(last_price),
-            "predicted_price": float(predicted_adj),
+            "predicted_price": float(predicted),
             "prediction_interval_68": {"low": float(lo68), "high": float(hi68)},
             "indicators": {"rsi": rsi},
-            "model": "statistical-returns-v1",
-            "note": "Statistical forecast (daily log-returns + volatility). Educational only.",
+            "model": "statistical-returns-v2",
+            "diagnostics": diag,
+            "note": "Statistical forecast (daily log-returns + volatility floor). Educational only.",
         }
 
         _cache_set(cache_key, payload, status=200)
